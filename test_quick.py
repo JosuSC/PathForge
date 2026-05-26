@@ -1,16 +1,15 @@
-"""test_quick.py — Verificación rápida del core (borrar después)."""
+"""test_quick.py — Verificación del core + LLM."""
 
 from data.loader import load_career_graph
 from core.graph import CareerGraph
 from core.constraints import ConstraintProfiles
 from core.generator import TrajectoryGenerator, GeneratorConfig
+from core.evaluator import TrajectoryEvaluator
+from llm.analyzer import TrajectoryAnalyzer
 
-# 1. Cargar grafo
+# 1. Generar trayectorias
 G = load_career_graph()
 career_graph = CareerGraph(G)
-print(career_graph)
-
-# 2. Generar trayectorias
 config = GeneratorConfig(beam_width=8, max_depth=5, top_k_results=5)
 generator = TrajectoryGenerator(career_graph, config)
 
@@ -19,9 +18,21 @@ results = generator.generate(
     constraints=ConstraintProfiles.balanced(max_years=10),
 )
 
-# 3. Mostrar resultados
-for i, et in enumerate(results, 1):
-    print(f"\n{'='*50}")
-    print(f"#{i} Rank Pareto: {et.pareto_rank} | Crowding: {et.crowding_distance:.3f}")
-    print(f"    Trayectoria: {et.trajectory}")
-    print(f"    Scores: {et.scores}")
+print(f"Trayectorias generadas: {len(results)}")
+for et in results:
+    print(f"  {et.trajectory} | rank={et.pareto_rank}")
+
+# 2. Análisis con Gemini
+analyzer = TrajectoryAnalyzer(user_profile="desarrollador junior con 1 año de experiencia")
+
+print("\n" + "="*60)
+print("ANÁLISIS COMPARATIVO (Gemini)")
+print("="*60)
+result = analyzer.compare(results)
+print(result.content)
+
+print("\n" + "="*60)
+print("RANKING POR CRITERIO")
+print("="*60)
+ranking = analyzer.rank_by(results, "quiero crecer rápido con el menor riesgo posible")
+print(ranking.content)
