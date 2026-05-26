@@ -114,17 +114,9 @@ class TrajectoryGenerator:
                 logger.debug(f"Beam vacío en profundidad {depth}, deteniendo.")
                 break
 
-            # Separar trayectorias completas de las que siguen expandiéndose
             for path in candidates:
-                last_node = path[-1]
-                is_terminal = (
-                    not self._graph.successors(last_node)
-                    or (target and last_node == target)
-                )
                 if len(path) >= self._config.min_depth:
                     completed.append(path)
-                if not is_terminal:
-                    beam = candidates  # continuar expandiendo
 
             beam = self._select_beam(candidates, constraints)
 
