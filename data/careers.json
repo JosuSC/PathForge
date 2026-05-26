@@ -1,0 +1,370 @@
+{
+    "nodes": [
+        {
+            "id": "junior_dev",
+            "label": "Junior Developer",
+            "type": "role",
+            "skills": [
+                "python",
+                "git",
+                "sql"
+            ],
+            "avg_salary": 25000,
+            "demand": 0.85,
+            "satisfaction": 0.65,
+            "years_experience": 1
+        },
+        {
+            "id": "mid_dev",
+            "label": "Mid-level Developer",
+            "type": "role",
+            "skills": [
+                "python",
+                "git",
+                "sql",
+                "system_design",
+                "testing"
+            ],
+            "avg_salary": 45000,
+            "demand": 0.90,
+            "satisfaction": 0.72,
+            "years_experience": 3
+        },
+        {
+            "id": "senior_dev",
+            "label": "Senior Developer",
+            "type": "role",
+            "skills": [
+                "system_design",
+                "architecture",
+                "mentoring",
+                "cloud"
+            ],
+            "avg_salary": 75000,
+            "demand": 0.88,
+            "satisfaction": 0.78,
+            "years_experience": 6
+        },
+        {
+            "id": "tech_lead",
+            "label": "Tech Lead",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "architecture",
+                "communication",
+                "planning"
+            ],
+            "avg_salary": 90000,
+            "demand": 0.75,
+            "satisfaction": 0.80,
+            "years_experience": 8
+        },
+        {
+            "id": "engineering_manager",
+            "label": "Engineering Manager",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "hiring",
+                "roadmap",
+                "communication"
+            ],
+            "avg_salary": 110000,
+            "demand": 0.65,
+            "satisfaction": 0.75,
+            "years_experience": 10
+        },
+        {
+            "id": "data_scientist",
+            "label": "Data Scientist",
+            "type": "role",
+            "skills": [
+                "python",
+                "ml",
+                "statistics",
+                "visualization"
+            ],
+            "avg_salary": 70000,
+            "demand": 0.92,
+            "satisfaction": 0.80,
+            "years_experience": 3
+        },
+        {
+            "id": "ml_engineer",
+            "label": "ML Engineer",
+            "type": "role",
+            "skills": [
+                "python",
+                "ml",
+                "mlops",
+                "cloud",
+                "system_design"
+            ],
+            "avg_salary": 85000,
+            "demand": 0.94,
+            "satisfaction": 0.82,
+            "years_experience": 5
+        },
+        {
+            "id": "devops_engineer",
+            "label": "DevOps Engineer",
+            "type": "role",
+            "skills": [
+                "cloud",
+                "ci_cd",
+                "docker",
+                "kubernetes",
+                "monitoring"
+            ],
+            "avg_salary": 72000,
+            "demand": 0.91,
+            "satisfaction": 0.74,
+            "years_experience": 4
+        },
+        {
+            "id": "product_manager",
+            "label": "Product Manager",
+            "type": "role",
+            "skills": [
+                "communication",
+                "planning",
+                "analytics",
+                "leadership"
+            ],
+            "avg_salary": 95000,
+            "demand": 0.80,
+            "satisfaction": 0.77,
+            "years_experience": 5
+        },
+        {
+            "id": "cto",
+            "label": "CTO",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "architecture",
+                "strategy",
+                "hiring",
+                "communication"
+            ],
+            "avg_salary": 180000,
+            "demand": 0.40,
+            "satisfaction": 0.85,
+            "years_experience": 15
+        },
+        {
+            "id": "freelancer",
+            "label": "Freelancer / Independent",
+            "type": "role",
+            "skills": [
+                "self_management",
+                "communication",
+                "multiple_stacks"
+            ],
+            "avg_salary": 55000,
+            "demand": 0.70,
+            "satisfaction": 0.83,
+            "years_experience": 3
+        },
+        {
+            "id": "startup_founder",
+            "label": "Startup Founder",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "strategy",
+                "communication",
+                "resilience"
+            ],
+            "avg_salary": 30000,
+            "demand": 0.50,
+            "satisfaction": 0.88,
+            "years_experience": 5
+        }
+    ],
+    "edges": [
+        {
+            "from": "junior_dev",
+            "to": "mid_dev",
+            "transition_years": 2,
+            "difficulty": 0.4,
+            "risk": 0.2
+        },
+        {
+            "from": "junior_dev",
+            "to": "data_scientist",
+            "transition_years": 2,
+            "difficulty": 0.6,
+            "risk": 0.3
+        },
+        {
+            "from": "junior_dev",
+            "to": "devops_engineer",
+            "transition_years": 2,
+            "difficulty": 0.5,
+            "risk": 0.25
+        },
+        {
+            "from": "junior_dev",
+            "to": "freelancer",
+            "transition_years": 1,
+            "difficulty": 0.5,
+            "risk": 0.6
+        },
+        {
+            "from": "mid_dev",
+            "to": "senior_dev",
+            "transition_years": 3,
+            "difficulty": 0.5,
+            "risk": 0.2
+        },
+        {
+            "from": "mid_dev",
+            "to": "data_scientist",
+            "transition_years": 1,
+            "difficulty": 0.55,
+            "risk": 0.3
+        },
+        {
+            "from": "mid_dev",
+            "to": "ml_engineer",
+            "transition_years": 2,
+            "difficulty": 0.65,
+            "risk": 0.3
+        },
+        {
+            "from": "mid_dev",
+            "to": "devops_engineer",
+            "transition_years": 1,
+            "difficulty": 0.45,
+            "risk": 0.2
+        },
+        {
+            "from": "mid_dev",
+            "to": "freelancer",
+            "transition_years": 1,
+            "difficulty": 0.4,
+            "risk": 0.5
+        },
+        {
+            "from": "senior_dev",
+            "to": "tech_lead",
+            "transition_years": 2,
+            "difficulty": 0.6,
+            "risk": 0.25
+        },
+        {
+            "from": "senior_dev",
+            "to": "ml_engineer",
+            "transition_years": 1,
+            "difficulty": 0.6,
+            "risk": 0.25
+        },
+        {
+            "from": "senior_dev",
+            "to": "product_manager",
+            "transition_years": 2,
+            "difficulty": 0.7,
+            "risk": 0.4
+        },
+        {
+            "from": "senior_dev",
+            "to": "freelancer",
+            "transition_years": 1,
+            "difficulty": 0.3,
+            "risk": 0.4
+        },
+        {
+            "from": "senior_dev",
+            "to": "startup_founder",
+            "transition_years": 2,
+            "difficulty": 0.8,
+            "risk": 0.7
+        },
+        {
+            "from": "tech_lead",
+            "to": "engineering_manager",
+            "transition_years": 2,
+            "difficulty": 0.55,
+            "risk": 0.2
+        },
+        {
+            "from": "tech_lead",
+            "to": "cto",
+            "transition_years": 5,
+            "difficulty": 0.85,
+            "risk": 0.4
+        },
+        {
+            "from": "tech_lead",
+            "to": "product_manager",
+            "transition_years": 2,
+            "difficulty": 0.65,
+            "risk": 0.35
+        },
+        {
+            "from": "engineering_manager",
+            "to": "cto",
+            "transition_years": 4,
+            "difficulty": 0.8,
+            "risk": 0.35
+        },
+        {
+            "from": "data_scientist",
+            "to": "ml_engineer",
+            "transition_years": 2,
+            "difficulty": 0.5,
+            "risk": 0.2
+        },
+        {
+            "from": "data_scientist",
+            "to": "product_manager",
+            "transition_years": 2,
+            "difficulty": 0.6,
+            "risk": 0.3
+        },
+        {
+            "from": "ml_engineer",
+            "to": "cto",
+            "transition_years": 7,
+            "difficulty": 0.85,
+            "risk": 0.4
+        },
+        {
+            "from": "ml_engineer",
+            "to": "startup_founder",
+            "transition_years": 3,
+            "difficulty": 0.75,
+            "risk": 0.65
+        },
+        {
+            "from": "devops_engineer",
+            "to": "tech_lead",
+            "transition_years": 3,
+            "difficulty": 0.65,
+            "risk": 0.3
+        },
+        {
+            "from": "product_manager",
+            "to": "cto",
+            "transition_years": 6,
+            "difficulty": 0.8,
+            "risk": 0.4
+        },
+        {
+            "from": "product_manager",
+            "to": "startup_founder",
+            "transition_years": 3,
+            "difficulty": 0.7,
+            "risk": 0.6
+        },
+        {
+            "from": "freelancer",
+            "to": "startup_founder",
+            "transition_years": 2,
+            "difficulty": 0.65,
+            "risk": 0.65
+        }
+    ]
+}

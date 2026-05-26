@@ -1,0 +1,20 @@
+# LLM
+google-generativeai>=0.7.0   # Cliente oficial Gemini
+
+# Data & algorithms
+networkx>=3.3                # Grafos (modelar el espacio de trayectorias)
+numpy>=1.26                  # Operaciones numéricas eficientes
+pymoo>=0.6.1                 # Optimización multiobjetivo (NSGA-II)
+
+# Visualization & reporting
+matplotlib>=3.9              # Gráficas para experimentos
+rich>=13.7                   # Output bonito en terminal
+
+# Config & utilities
+python-dotenv>=1.0           # Cargar .env de forma segura
+pydantic>=2.7                # Validación de datos con tipos
+loguru>=0.7                  # Logging profesional
+
+# Testing
+pytest>=8.2
+pytest-cov>=5.0
