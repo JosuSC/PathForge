@@ -13,7 +13,11 @@ import os
 import time
 from typing import Any
 
-import google.generativeai as genai
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", FutureWarning)
+    import google.generativeai as genai
+
 from dotenv import load_dotenv
 from loguru import logger
 

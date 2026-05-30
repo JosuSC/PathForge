@@ -1,6 +1,7 @@
 # Environment & secrets
 .env
 *.env
+!.env.example
 
 # Python
 __pycache__/
@@ -29,5 +30,8 @@ experiments/results/
 .DS_Store
 Thumbs.db
 
-# Resultados de experimentos (son grandes, no van al repo)
-experiments/results/
+# Frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local

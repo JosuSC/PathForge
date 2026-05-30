@@ -1,0 +1,3862 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.env.example
+.gitignore
+backend/core/__init__.py
+backend/core/constraints.py
+backend/core/evaluator.py
+backend/core/generator.py
+backend/core/graph.py
+backend/data/__init__.py
+backend/data/careers.json
+backend/data/loader.py
+backend/experiments/__init__.py
+backend/experiments/metrics.py
+backend/experiments/runner.py
+backend/experiments/visualizer.py
+backend/llm/__init__.py
+backend/llm/analyzer.py
+backend/llm/client.py
+backend/llm/prompts.py
+backend/main_api.py
+backend/tests/__init__.py
+backend/tests/test_generator.py
+backend/tests/test_graph.py
+backend/tests/test_llm.py
+frontend/css/style.css
+frontend/index.html
+frontend/js/animation.js
+frontend/js/graph3d.js
+frontend/js/ui.js
+frontend/js/universe.js
+frontend/js/websocket.js
+main.py
+README.md
+requirements.txt
+test_quick.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".env.example">
+# ──────────────────────────────────────
+#  PathForge Configuration
+# ──────────────────────────────────────
+
+# LLM Provider: "gemini" (default, free academic tier)
+LLM_PROVIDER=gemini
+
+# Google Gemini API Key (get yours at https://aistudio.google.com)
+GEMINI_API_KEY=your_gemini_api_key_here
+</file>
+
+<file path="backend/core/__init__.py">
+
+</file>
+
+<file path="backend/core/constraints.py">
+"""
+core/constraints.py
+-------------------
+Define y evalúa restricciones sobre trayectorias profesionales.
+
+Separar restricciones del algoritmo de búsqueda permite:
+- Agregar/quitar restricciones sin tocar el generador
+- Testear cada restricción de forma independiente
+- Combinar restricciones con operadores lógicos (AND, OR)
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Protocol
+
+
+# ---------------------------------------------------------------------------
+# Protocolo: cualquier objeto que sepa dar atributos de nodo/arista
+# ---------------------------------------------------------------------------
+
+class GraphProtocol(Protocol):
+    def node_attrs(self, node_id: str) -> dict: ...
+    def edge_attrs(self, u: str, v: str) -> dict: ...
+    def has_edge(self, u: str, v: str) -> bool: ...
+
+
+# ---------------------------------------------------------------------------
+# Base abstracta
+# ---------------------------------------------------------------------------
+
+class Constraint(ABC):
+    """Interfaz base para todas las restricciones."""
+
+    @abstractmethod
+    def is_satisfied(
+        self,
+        path: tuple[str, ...],
+        graph: GraphProtocol,
+    ) -> bool:
+        """
+        Evalúa si el camino parcial o completo satisface la restricción.
+
+        Args:
+            path: Secuencia de IDs de nodos (puede ser parcial).
+            graph: Grafo sobre el que opera.
+
+        Returns:
+            True si la restricción se cumple.
+        """
+        ...
+
+    def __and__(self, other: "Constraint") -> "AndConstraint":
+        return AndConstraint(self, other)
+
+    def __or__(self, other: "Constraint") -> "OrConstraint":
+        return OrConstraint(self, other)
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
+
+# ---------------------------------------------------------------------------
+# Operadores lógicos
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AndConstraint(Constraint):
+    left: Constraint
+    right: Constraint
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        return self.left.is_satisfied(path, graph) and self.right.is_satisfied(path, graph)
+
+    def __repr__(self) -> str:
+        return f"({self.left} AND {self.right})"
+
+
+@dataclass
+class OrConstraint(Constraint):
+    left: Constraint
+    right: Constraint
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        return self.left.is_satisfied(path, graph) or self.right.is_satisfied(path, graph)
+
+    def __repr__(self) -> str:
+        return f"({self.left} OR {self.right})"
+
+
+# ---------------------------------------------------------------------------
+# Restricciones concretas
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MaxYearsConstraint(Constraint):
+    """La trayectoria no puede superar N años en total."""
+
+    max_years: int
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        if len(path) < 2:
+            return True
+        total = sum(
+            graph.edge_attrs(path[i], path[i + 1])["transition_years"]
+            for i in range(len(path) - 1)
+        )
+        return total <= self.max_years
+
+    def __repr__(self) -> str:
+        return f"MaxYears({self.max_years})"
+
+
+@dataclass
+class MaxRiskConstraint(Constraint):
+    """El riesgo promedio de las transiciones no puede superar el umbral."""
+
+    max_risk: float
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        if len(path) < 2:
+            return True
+        risks = [
+            graph.edge_attrs(path[i], path[i + 1])["risk"]
+            for i in range(len(path) - 1)
+        ]
+        return (sum(risks) / len(risks)) <= self.max_risk
+
+    def __repr__(self) -> str:
+        return f"MaxRisk({self.max_risk})"
+
+
+@dataclass
+class MinSalaryConstraint(Constraint):
+    """El salario final debe superar un mínimo."""
+
+    min_salary: float
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        if not path:
+            return True
+        final_salary = graph.node_attrs(path[-1])["avg_salary"]
+        return final_salary >= self.min_salary
+
+    def __repr__(self) -> str:
+        return f"MinSalary({self.min_salary})"
+
+
+@dataclass
+class MinLengthConstraint(Constraint):
+    """La trayectoria debe tener al menos N pasos (roles)."""
+
+    min_steps: int
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        return len(path) >= self.min_steps
+
+    def __repr__(self) -> str:
+        return f"MinLength({self.min_steps})"
+
+
+@dataclass
+class MaxDifficultyConstraint(Constraint):
+    """La dificultad promedio de transiciones no puede superar el umbral."""
+
+    max_difficulty: float
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        if len(path) < 2:
+            return True
+        diffs = [
+            graph.edge_attrs(path[i], path[i + 1])["difficulty"]
+            for i in range(len(path) - 1)
+        ]
+        return (sum(diffs) / len(diffs)) <= self.max_difficulty
+
+    def __repr__(self) -> str:
+        return f"MaxDifficulty({self.max_difficulty})"
+
+
+@dataclass
+class RequiredNodeConstraint(Constraint):
+    """La trayectoria debe pasar por un nodo específico."""
+
+    required_node: str
+
+    def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
+        return self.required_node in path
+
+    def __repr__(self) -> str:
+        return f"RequiredNode({self.required_node})"
+
+
+# ---------------------------------------------------------------------------
+# Fábrica de configuraciones predefinidas
+# ---------------------------------------------------------------------------
+
+class ConstraintProfiles:
+    """
+    Perfiles de restricciones listos para usar en experimentos.
+    Cada perfil combina restricciones que representan un tipo de usuario.
+    """
+
+    @staticmethod
+    def conservative() -> Constraint:
+        """Usuario adverso al riesgo, quiere estabilidad."""
+        return MaxRiskConstraint(0.35) & MaxDifficultyConstraint(0.55)
+
+    @staticmethod
+    def ambitious() -> Constraint:
+        """Usuario que prioriza crecimiento salarial rápido."""
+        return MinSalaryConstraint(70_000) & MinLengthConstraint(2)
+
+    @staticmethod
+    def balanced(max_years: int = 10) -> Constraint:
+        """Usuario que busca equilibrio entre riesgo, tiempo y salario."""
+        return (
+            MaxYearsConstraint(max_years)
+            & MaxRiskConstraint(0.50)
+            & MinSalaryConstraint(50_000)
+        )
+
+    @staticmethod
+    def fast_track() -> Constraint:
+        """Usuario que quiere llegar lejos en poco tiempo."""
+        return MaxYearsConstraint(6) & MinSalaryConstraint(80_000)
+</file>
+
+<file path="backend/core/evaluator.py">
+"""
+core/evaluator.py
+-----------------
+Evalúa y rankea trayectorias usando dominancia de Pareto.
+
+Concepto clave — Dominancia de Pareto:
+    Una trayectoria A *domina* a B si A es al menos igual en todos los
+    objetivos y estrictamente mejor en al menos uno.
+    El *frente de Pareto* es el conjunto de trayectorias no dominadas:
+    las que representan los mejores trade-offs posibles.
+
+Esto es superior a un ranking simple porque no obliga al usuario a
+elegir un único criterio "ganador" — le muestra el espacio de trade-offs.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from core.graph import CareerGraph, Trajectory
+
+
+# ---------------------------------------------------------------------------
+# Tipos de datos
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EvaluatedTrajectory:
+    """Trayectoria con sus métricas calculadas y rank de Pareto."""
+
+    trajectory: Trajectory
+    scores: dict[str, float]
+    pareto_rank: int = 0          # 0 = frente óptimo, mayor = peor
+    crowding_distance: float = 0.0  # Diversidad dentro del frente
+
+    def __repr__(self) -> str:
+        return (
+            f"EvaluatedTrajectory("
+            f"path={self.trajectory}, "
+            f"rank={self.pareto_rank}, "
+            f"salary_growth={self.scores.get('salary_growth', 0):.2f})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Evaluador principal
+# ---------------------------------------------------------------------------
+
+class TrajectoryEvaluator:
+    """
+    Evalúa un conjunto de trayectorias y las ordena por dominancia de Pareto.
+
+    Los objetivos de maximización se normalizan en [0, 1].
+    Los costos (minimizar) se invierten para uniformidad.
+    """
+
+    # Objetivos a maximizar (mayor = mejor)
+    MAXIMIZE = ("salary_growth", "avg_demand", "avg_satisfaction", "final_salary")
+    # Costos a minimizar (menor = mejor → se invierten)
+    MINIMIZE = ("total_years", "avg_risk", "avg_difficulty")
+
+    def __init__(self, graph: CareerGraph) -> None:
+        self._graph = graph
+
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+
+    def evaluate_all(
+        self, trajectories: list[Trajectory]
+    ) -> list[EvaluatedTrajectory]:
+        """
+        Evalúa, rankea por Pareto y calcula crowding distance.
+
+        Args:
+            trajectories: Lista de trayectorias a evaluar.
+
+        Returns:
+            Lista de EvaluatedTrajectory ordenada por rank (mejor primero).
+        """
+        if not trajectories:
+            return []
+
+        # 1. Calcular scores brutos
+        evaluated = [
+            EvaluatedTrajectory(
+                trajectory=t,
+                scores=self._graph.score_trajectory(t.nodes),
+            )
+            for t in trajectories
+            if len(t) >= 2
+        ]
+
+        if not evaluated:
+            return []
+
+        # 2. Construir matriz de objetivos normalizados
+        obj_matrix = self._build_objective_matrix(evaluated)
+
+        # 3. Asignar ranks de Pareto (NSGA-II fast non-dominated sort)
+        ranks = self._fast_non_dominated_sort(obj_matrix)
+        for et, rank in zip(evaluated, ranks):
+            et.pareto_rank = rank
+
+        # 4. Calcular crowding distance por frente
+        self._assign_crowding_distances(evaluated, obj_matrix)
+
+        # 5. Ordenar: menor rank primero, mayor crowding distance desempata
+        evaluated.sort(key=lambda et: (et.pareto_rank, -et.crowding_distance))
+
+        return evaluated
+
+    def pareto_front(
+        self, evaluated: list[EvaluatedTrajectory]
+    ) -> list[EvaluatedTrajectory]:
+        """Retorna solo las trayectorias del frente óptimo (rank == 0)."""
+        return [et for et in evaluated if et.pareto_rank == 0]
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _build_objective_matrix(
+        self, evaluated: list[EvaluatedTrajectory]
+    ) -> np.ndarray:
+        """
+        Construye matriz (N x M) donde cada fila es una trayectoria
+        y cada columna un objetivo, todos orientados a MAXIMIZAR.
+        """
+        objectives = list(self.MAXIMIZE) + list(self.MINIMIZE)
+        matrix = np.array(
+            [[et.scores.get(obj, 0.0) for obj in objectives] for et in evaluated],
+            dtype=float,
+        )
+
+        # Invertir columnas de minimización → todo queda como maximizar
+        n_max = len(self.MAXIMIZE)
+        matrix[:, n_max:] *= -1
+
+        # Normalizar cada columna en [0, 1]
+        col_min = matrix.min(axis=0)
+        col_max = matrix.max(axis=0)
+        col_range = np.where(col_max - col_min == 0, 1, col_max - col_min)
+        matrix = (matrix - col_min) / col_range
+
+        return matrix
+
+    @staticmethod
+    def _fast_non_dominated_sort(obj_matrix: np.ndarray) -> list[int]:
+        """
+        NSGA-II fast non-dominated sort.
+        Retorna lista de ranks (0-indexed) para cada individuo.
+
+        Complejidad: O(M * N²) donde M = objetivos, N = individuos.
+        """
+        n = len(obj_matrix)
+        domination_count = np.zeros(n, dtype=int)  # cuántos dominan a i
+        dominated_by: list[list[int]] = [[] for _ in range(n)]
+        ranks = [-1] * n
+
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                if TrajectoryEvaluator._dominates(obj_matrix[i], obj_matrix[j]):
+                    dominated_by[i].append(j)
+                elif TrajectoryEvaluator._dominates(obj_matrix[j], obj_matrix[i]):
+                    domination_count[i] += 1
+
+        # Frente 0: nadie los domina
+        current_front = [i for i in range(n) if domination_count[i] == 0]
+        rank = 0
+        while current_front:
+            for i in current_front:
+                ranks[i] = rank
+            next_front = []
+            for i in current_front:
+                for j in dominated_by[i]:
+                    domination_count[j] -= 1
+                    if domination_count[j] == 0:
+                        next_front.append(j)
+            current_front = next_front
+            rank += 1
+
+        return ranks
+
+    @staticmethod
+    def _dominates(a: np.ndarray, b: np.ndarray) -> bool:
+        """
+        a domina a b si:
+        - a >= b en todos los objetivos, Y
+        - a > b en al menos uno.
+        """
+        return bool(np.all(a >= b) and np.any(a > b))
+
+    @staticmethod
+    def _assign_crowding_distances(
+        evaluated: list[EvaluatedTrajectory],
+        obj_matrix: np.ndarray,
+    ) -> None:
+        """
+        Crowding distance: mide qué tan "aislada" está cada solución
+        dentro de su frente. Mayor distancia = más diversidad = mejor.
+        Permite al algoritmo preferir soluciones diversas sobre clusters.
+        """
+        max_rank = max(et.pareto_rank for et in evaluated)
+
+        for rank in range(max_rank + 1):
+            indices = [i for i, et in enumerate(evaluated) if et.pareto_rank == rank]
+            if len(indices) <= 2:
+                for i in indices:
+                    evaluated[i].crowding_distance = float("inf")
+                continue
+
+            front_matrix = obj_matrix[indices]
+            n_obj = front_matrix.shape[1]
+            distances = np.zeros(len(indices))
+
+            for m in range(n_obj):
+                sorted_idx = np.argsort(front_matrix[:, m])
+                distances[sorted_idx[0]] = float("inf")
+                distances[sorted_idx[-1]] = float("inf")
+                col_range = front_matrix[sorted_idx[-1], m] - front_matrix[sorted_idx[0], m]
+                if col_range == 0:
+                    continue
+                for k in range(1, len(sorted_idx) - 1):
+                    distances[sorted_idx[k]] += (
+                        front_matrix[sorted_idx[k + 1], m]
+                        - front_matrix[sorted_idx[k - 1], m]
+                    ) / col_range
+
+            for local_i, global_i in enumerate(indices):
+                evaluated[global_i].crowding_distance = float(distances[local_i])
+</file>
+
+<file path="backend/core/generator.py">
+"""
+core/generator.py
+-----------------
+Genera trayectorias profesionales usando Beam Search multiobjetivo.
+
+Algoritmo: Beam Search + scoring de Pareto
+------------------------------------------
+1. Comienza desde el nodo origen con un "beam" de K candidatos.
+2. En cada paso, expande todos los candidatos por sus vecinos válidos.
+3. Filtra por restricciones activas.
+4. Puntúa y selecciona los K mejores usando dominancia de Pareto +
+   crowding distance (diversidad).
+5. Repite hasta alcanzar la profundidad máxima o no haber expansiones.
+
+Fix aplicado: el beam se actualizaba dentro del for interno, causando
+sobreescritura prematura. Ahora completed y beam se manejan correctamente.
+
+Optimización: _select_beam usa evaluación directa sin re-instanciar
+el evaluador, reduciendo overhead en cada iteración del beam.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+from loguru import logger
+
+from core.constraints import Constraint
+from core.evaluator import EvaluatedTrajectory, TrajectoryEvaluator
+from core.graph import CareerGraph, Trajectory
+
+
+# ---------------------------------------------------------------------------
+# Configuración
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GeneratorConfig:
+    """Parámetros del Beam Search."""
+
+    beam_width: int = 10
+    """Número de candidatos activos por iteración (K)."""
+
+    max_depth: int = 6
+    """Profundidad máxima (número de roles en la trayectoria)."""
+
+    min_depth: int = 2
+    """Profundidad mínima para considerar una trayectoria completa."""
+
+    top_k_results: int = 10
+    """Número de trayectorias finales a retornar."""
+
+    diversity_weight: float = 0.3
+    """Peso de la crowding distance en el score de selección [0, 1]."""
+
+    emit_steps: bool = False
+    """Si True, el generador emite cada paso via callback (para WebSocket)."""
+
+
+# ---------------------------------------------------------------------------
+# Generador
+# ---------------------------------------------------------------------------
+
+class TrajectoryGenerator:
+    """
+    Genera trayectorias profesionales diversas y de alta calidad
+    usando Beam Search guiado por dominancia de Pareto.
+    """
+
+    def __init__(
+        self,
+        graph: CareerGraph,
+        config: GeneratorConfig | None = None,
+    ) -> None:
+        self._graph = graph
+        self._config = config or GeneratorConfig()
+        self._evaluator = TrajectoryEvaluator(graph)
+
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+
+    def generate(
+        self,
+        source: str,
+        constraints: Constraint | None = None,
+        target: str | None = None,
+        step_callback=None,
+    ) -> list[EvaluatedTrajectory]:
+        """
+        Genera y evalúa trayectorias desde `source`.
+
+        Args:
+            source:          ID del nodo de inicio.
+            constraints:     Restricciones a aplicar durante la búsqueda.
+            target:          (Opcional) nodo destino deseado.
+            step_callback:   Callable(depth, beam, completed) para emitir
+                             pasos en tiempo real (WebSocket).
+
+        Returns:
+            Lista de EvaluatedTrajectory ordenada por calidad (mejor primero).
+        """
+        if source not in self._graph.all_node_ids():
+            raise ValueError(f"Nodo fuente '{source}' no existe en el grafo.")
+
+        logger.info(
+            f"Beam Search desde '{source}' | "
+            f"beam_width={self._config.beam_width} | "
+            f"max_depth={self._config.max_depth}"
+        )
+
+        beam: list[tuple[str, ...]] = [(source,)]
+        completed: set[tuple[str, ...]] = set()
+
+        for depth in range(1, self._config.max_depth):
+            # 1. Expandir beam actual
+            candidates = self._expand_beam(beam, constraints, target)
+
+            if not candidates:
+                logger.debug(f"Beam vacío en profundidad {depth}.")
+                break
+
+            # 2. Registrar trayectorias completadas (min_depth cumplida)
+            for path in candidates:
+                if len(path) >= self._config.min_depth:
+                    completed.add(path)
+
+            # 3. Seleccionar nuevo beam para la siguiente iteración
+            beam = self._select_beam(candidates, constraints)
+
+            logger.debug(
+                f"Depth {depth}: {len(candidates)} candidatos → "
+                f"beam={len(beam)}, completadas={len(completed)}"
+            )
+
+            # 4. Emitir paso si hay callback (para animación WebSocket)
+            if step_callback and self._config.emit_steps:
+                step_callback(depth, list(beam), list(completed))
+
+        # Incluir trayectorias del beam final
+        for path in beam:
+            if len(path) >= self._config.min_depth:
+                completed.add(path)
+
+        logger.info(f"Trayectorias únicas: {len(completed)}")
+
+        # Evaluar y rankear todas
+        trajectories = [Trajectory(nodes=p) for p in completed]
+        evaluated = self._evaluator.evaluate_all(trajectories)
+
+        return evaluated[: self._config.top_k_results]
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _expand_beam(
+        self,
+        beam: list[tuple[str, ...]],
+        constraints: Constraint | None,
+        target: str | None,
+    ) -> list[tuple[str, ...]]:
+        """
+        Expande cada camino del beam. Evita ciclos y aplica poda por
+        restricciones en tiempo de expansión (branch-and-bound).
+        """
+        expanded: list[tuple[str, ...]] = []
+
+        for path in beam:
+            current = path[-1]
+            visited = set(path)
+
+            # Si llegamos al target, no seguimos expandiendo este camino
+            if target and current == target:
+                continue
+
+            for neighbor in self._graph.successors(current):
+                if neighbor in visited:
+                    continue
+
+                new_path = path + (neighbor,)
+
+                if constraints and not constraints.is_satisfied(new_path, self._graph):
+                    continue
+
+                expanded.append(new_path)
+
+        return expanded
+
+    def _select_beam(
+        self,
+        candidates: list[tuple[str, ...]],
+        constraints: Constraint | None,
+    ) -> list[tuple[str, ...]]:
+        """
+        Selecciona los mejores K candidatos.
+        Si hay menos candidatos que beam_width, los retorna todos.
+        """
+        if len(candidates) <= self._config.beam_width:
+            return candidates
+
+        # Evaluar parcialmente para scoring
+        partial = [Trajectory(nodes=p) for p in candidates]
+        evaluated = self._evaluator.evaluate_all(partial)
+
+        scored: list[tuple[float, tuple[str, ...]]] = [
+            (
+                (1 - self._config.diversity_weight) * self._pareto_score(et)
+                + self._config.diversity_weight * self._heuristic_potential(et.trajectory.nodes[-1]),
+                et.trajectory.nodes,
+            )
+            for et in evaluated
+        ]
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [path for _, path in scored[: self._config.beam_width]]
+
+    @staticmethod
+    def _pareto_score(et: EvaluatedTrajectory) -> float:
+        rank_score = 1.0 / (1.0 + et.pareto_rank)
+        crowding = min(et.crowding_distance, 10.0) / 10.0
+        return 0.7 * rank_score + 0.3 * crowding
+
+    def _heuristic_potential(self, node_id: str) -> float:
+        attrs = self._graph.node_attrs(node_id)
+        successors_count = len(self._graph.successors(node_id))
+        salary_score = attrs.get("avg_salary", 0) / 180_000
+        branching_score = min(successors_count / 5.0, 1.0)
+        return 0.6 * salary_score + 0.4 * branching_score
+</file>
+
+<file path="backend/core/graph.py">
+"""
+core/graph.py
+-------------
+Capa de abstracción sobre el grafo de carreras.
+Ofrece operaciones de alto nivel: vecinos, validación de caminos,
+cálculo de atributos agregados de una trayectoria.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Iterator
+
+import networkx as nx
+import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Tipos de datos
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Trajectory:
+    """
+    Representa una trayectoria profesional como secuencia de IDs de nodos.
+
+    Inmutable (frozen) para poder usarla como clave de diccionario y en sets.
+    """
+
+    nodes: tuple[str, ...]
+    total_years: float = 0.0
+    scores: dict[str, float] = field(default_factory=dict, compare=False, hash=False)
+
+    def __len__(self) -> int:
+        return len(self.nodes)
+
+    def __repr__(self) -> str:
+        return " → ".join(self.nodes)
+
+
+# ---------------------------------------------------------------------------
+# CareerGraph
+# ---------------------------------------------------------------------------
+
+class CareerGraph:
+    """
+    Wrapper sobre nx.DiGraph que expone operaciones específicas
+    del dominio de trayectorias profesionales.
+    """
+
+    def __init__(self, graph: nx.DiGraph) -> None:
+        self._g = graph
+        self._validate()
+
+    # ------------------------------------------------------------------
+    # Validación
+    # ------------------------------------------------------------------
+
+    def _validate(self) -> None:
+        """Verifica que el grafo tenga los atributos mínimos requeridos."""
+        required_node_attrs = {"avg_salary", "demand", "satisfaction"}
+        required_edge_attrs = {"difficulty", "risk", "transition_years"}
+
+        for node, data in self._g.nodes(data=True):
+            missing = required_node_attrs - data.keys()
+            if missing:
+                raise ValueError(f"Nodo '{node}' falta atributos: {missing}")
+
+        for u, v, data in self._g.edges(data=True):
+            missing = required_edge_attrs - data.keys()
+            if missing:
+                raise ValueError(f"Arista '{u}→{v}' falta atributos: {missing}")
+
+    # ------------------------------------------------------------------
+    # Consultas básicas
+    # ------------------------------------------------------------------
+
+    def successors(self, node_id: str) -> list[str]:
+        """Retorna los nodos alcanzables desde node_id."""
+        return list(self._g.successors(node_id))
+
+    def node_attrs(self, node_id: str) -> dict:
+        """Retorna todos los atributos de un nodo."""
+        return dict(self._g.nodes[node_id])
+
+    def edge_attrs(self, u: str, v: str) -> dict:
+        """Retorna atributos de la arista u→v."""
+        return dict(self._g[u][v])
+
+    def has_edge(self, u: str, v: str) -> bool:
+        return self._g.has_edge(u, v)
+
+    def all_node_ids(self) -> list[str]:
+        return list(self._g.nodes())
+
+    # ------------------------------------------------------------------
+    # Scoring de trayectorias
+    # ------------------------------------------------------------------
+
+    def score_trajectory(self, trajectory: tuple[str, ...]) -> dict[str, float]:
+        """
+        Calcula métricas cuantitativas de una trayectoria.
+
+        Objetivos (maximizar):
+            - salary_growth:  crecimiento salarial promedio entre pasos
+            - avg_demand:     demanda laboral promedio de los roles
+            - avg_satisfaction: satisfacción promedio de los roles
+            - final_salary:   salario del rol final
+
+        Costos (minimizar, devueltos como negativos para uniformidad):
+            - total_years:    años totales de la trayectoria
+            - avg_risk:       riesgo promedio de las transiciones
+            - avg_difficulty: dificultad promedio de las transiciones
+        """
+        if len(trajectory) < 2:
+            return {}
+
+        nodes_data = [self.node_attrs(n) for n in trajectory]
+        edges_data = [
+            self.edge_attrs(trajectory[i], trajectory[i + 1])
+            for i in range(len(trajectory) - 1)
+        ]
+
+        salaries = [n["avg_salary"] for n in nodes_data]
+        demands = [n["demand"] for n in nodes_data]
+        satisfactions = [n["satisfaction"] for n in nodes_data]
+
+        salary_growth = (salaries[-1] - salaries[0]) / max(salaries[0], 1)
+        total_years = sum(e["transition_years"] for e in edges_data)
+        avg_risk = float(np.mean([e["risk"] for e in edges_data]))
+        avg_difficulty = float(np.mean([e["difficulty"] for e in edges_data]))
+
+        return {
+            # Objetivos a maximizar
+            "salary_growth": round(salary_growth, 4),
+            "avg_demand": round(float(np.mean(demands)), 4),
+            "avg_satisfaction": round(float(np.mean(satisfactions)), 4),
+            "final_salary": round(salaries[-1], 2),
+            # Costos (menor es mejor)
+            "total_years": round(float(total_years), 2),
+            "avg_risk": round(avg_risk, 4),
+            "avg_difficulty": round(avg_difficulty, 4),
+        }
+
+    # ------------------------------------------------------------------
+    # Utilidades
+    # ------------------------------------------------------------------
+
+    def iter_paths_from(
+        self,
+        source: str,
+        max_depth: int = 5,
+        visited: frozenset[str] | None = None,
+    ) -> Iterator[tuple[str, ...]]:
+        """
+        Generador: itera todos los caminos simples desde source
+        hasta profundidad max_depth. Evita ciclos.
+        """
+        if visited is None:
+            visited = frozenset()
+
+        visited = visited | {source}
+
+        yield (source,)
+
+        if len(visited) >= max_depth:
+            return
+
+        for neighbor in self.successors(source):
+            if neighbor not in visited:
+                for sub_path in self.iter_paths_from(neighbor, max_depth, visited):
+                    yield (source,) + sub_path
+
+    def __repr__(self) -> str:
+        return (
+            f"CareerGraph("
+            f"nodes={self._g.number_of_nodes()}, "
+            f"edges={self._g.number_of_edges()})"
+        )
+</file>
+
+<file path="backend/data/__init__.py">
+
+</file>
+
+<file path="backend/data/careers.json">
+{
+    "nodes": [
+        {
+            "id": "junior_dev",
+            "label": "Junior Developer",
+            "type": "role",
+            "skills": [
+                "python",
+                "git",
+                "sql"
+            ],
+            "avg_salary": 25000,
+            "demand": 0.85,
+            "satisfaction": 0.65,
+            "years_experience": 1
+        },
+        {
+            "id": "mid_dev",
+            "label": "Mid-level Developer",
+            "type": "role",
+            "skills": [
+                "python",
+                "git",
+                "sql",
+                "system_design",
+                "testing"
+            ],
+            "avg_salary": 45000,
+            "demand": 0.90,
+            "satisfaction": 0.72,
+            "years_experience": 3
+        },
+        {
+            "id": "senior_dev",
+            "label": "Senior Developer",
+            "type": "role",
+            "skills": [
+                "system_design",
+                "architecture",
+                "mentoring",
+                "cloud"
+            ],
+            "avg_salary": 75000,
+            "demand": 0.88,
+            "satisfaction": 0.78,
+            "years_experience": 6
+        },
+        {
+            "id": "tech_lead",
+            "label": "Tech Lead",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "architecture",
+                "communication",
+                "planning"
+            ],
+            "avg_salary": 90000,
+            "demand": 0.75,
+            "satisfaction": 0.80,
+            "years_experience": 8
+        },
+        {
+            "id": "engineering_manager",
+            "label": "Engineering Manager",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "hiring",
+                "roadmap",
+                "communication"
+            ],
+            "avg_salary": 110000,
+            "demand": 0.65,
+            "satisfaction": 0.75,
+            "years_experience": 10
+        },
+        {
+            "id": "data_scientist",
+            "label": "Data Scientist",
+            "type": "role",
+            "skills": [
+                "python",
+                "ml",
+                "statistics",
+                "visualization"
+            ],
+            "avg_salary": 70000,
+            "demand": 0.92,
+            "satisfaction": 0.80,
+            "years_experience": 3
+        },
+        {
+            "id": "ml_engineer",
+            "label": "ML Engineer",
+            "type": "role",
+            "skills": [
+                "python",
+                "ml",
+                "mlops",
+                "cloud",
+                "system_design"
+            ],
+            "avg_salary": 85000,
+            "demand": 0.94,
+            "satisfaction": 0.82,
+            "years_experience": 5
+        },
+        {
+            "id": "devops_engineer",
+            "label": "DevOps Engineer",
+            "type": "role",
+            "skills": [
+                "cloud",
+                "ci_cd",
+                "docker",
+                "kubernetes",
+                "monitoring"
+            ],
+            "avg_salary": 72000,
+            "demand": 0.91,
+            "satisfaction": 0.74,
+            "years_experience": 4
+        },
+        {
+            "id": "product_manager",
+            "label": "Product Manager",
+            "type": "role",
+            "skills": [
+                "communication",
+                "planning",
+                "analytics",
+                "leadership"
+            ],
+            "avg_salary": 95000,
+            "demand": 0.80,
+            "satisfaction": 0.77,
+            "years_experience": 5
+        },
+        {
+            "id": "cto",
+            "label": "CTO",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "architecture",
+                "strategy",
+                "hiring",
+                "communication"
+            ],
+            "avg_salary": 180000,
+            "demand": 0.40,
+            "satisfaction": 0.85,
+            "years_experience": 15
+        },
+        {
+            "id": "freelancer",
+            "label": "Freelancer / Independent",
+            "type": "role",
+            "skills": [
+                "self_management",
+                "communication",
+                "multiple_stacks"
+            ],
+            "avg_salary": 55000,
+            "demand": 0.70,
+            "satisfaction": 0.83,
+            "years_experience": 3
+        },
+        {
+            "id": "startup_founder",
+            "label": "Startup Founder",
+            "type": "role",
+            "skills": [
+                "leadership",
+                "strategy",
+                "communication",
+                "resilience"
+            ],
+            "avg_salary": 30000,
+            "demand": 0.50,
+            "satisfaction": 0.88,
+            "years_experience": 5
+        }
+    ],
+    "edges": [
+        {
+            "from": "junior_dev",
+            "to": "mid_dev",
+            "transition_years": 2,
+            "difficulty": 0.4,
+            "risk": 0.2
+        },
+        {
+            "from": "junior_dev",
+            "to": "data_scientist",
+            "transition_years": 2,
+            "difficulty": 0.6,
+            "risk": 0.3
+        },
+        {
+            "from": "junior_dev",
+            "to": "devops_engineer",
+            "transition_years": 2,
+            "difficulty": 0.5,
+            "risk": 0.25
+        },
+        {
+            "from": "junior_dev",
+            "to": "freelancer",
+            "transition_years": 1,
+            "difficulty": 0.5,
+            "risk": 0.6
+        },
+        {
+            "from": "mid_dev",
+            "to": "senior_dev",
+            "transition_years": 3,
+            "difficulty": 0.5,
+            "risk": 0.2
+        },
+        {
+            "from": "mid_dev",
+            "to": "data_scientist",
+            "transition_years": 1,
+            "difficulty": 0.55,
+            "risk": 0.3
+        },
+        {
+            "from": "mid_dev",
+            "to": "ml_engineer",
+            "transition_years": 2,
+            "difficulty": 0.65,
+            "risk": 0.3
+        },
+        {
+            "from": "mid_dev",
+            "to": "devops_engineer",
+            "transition_years": 1,
+            "difficulty": 0.45,
+            "risk": 0.2
+        },
+        {
+            "from": "mid_dev",
+            "to": "freelancer",
+            "transition_years": 1,
+            "difficulty": 0.4,
+            "risk": 0.5
+        },
+        {
+            "from": "senior_dev",
+            "to": "tech_lead",
+            "transition_years": 2,
+            "difficulty": 0.6,
+            "risk": 0.25
+        },
+        {
+            "from": "senior_dev",
+            "to": "ml_engineer",
+            "transition_years": 1,
+            "difficulty": 0.6,
+            "risk": 0.25
+        },
+        {
+            "from": "senior_dev",
+            "to": "product_manager",
+            "transition_years": 2,
+            "difficulty": 0.7,
+            "risk": 0.4
+        },
+        {
+            "from": "senior_dev",
+            "to": "freelancer",
+            "transition_years": 1,
+            "difficulty": 0.3,
+            "risk": 0.4
+        },
+        {
+            "from": "senior_dev",
+            "to": "startup_founder",
+            "transition_years": 2,
+            "difficulty": 0.8,
+            "risk": 0.7
+        },
+        {
+            "from": "tech_lead",
+            "to": "engineering_manager",
+            "transition_years": 2,
+            "difficulty": 0.55,
+            "risk": 0.2
+        },
+        {
+            "from": "tech_lead",
+            "to": "cto",
+            "transition_years": 5,
+            "difficulty": 0.85,
+            "risk": 0.4
+        },
+        {
+            "from": "tech_lead",
+            "to": "product_manager",
+            "transition_years": 2,
+            "difficulty": 0.65,
+            "risk": 0.35
+        },
+        {
+            "from": "engineering_manager",
+            "to": "cto",
+            "transition_years": 4,
+            "difficulty": 0.8,
+            "risk": 0.35
+        },
+        {
+            "from": "data_scientist",
+            "to": "ml_engineer",
+            "transition_years": 2,
+            "difficulty": 0.5,
+            "risk": 0.2
+        },
+        {
+            "from": "data_scientist",
+            "to": "product_manager",
+            "transition_years": 2,
+            "difficulty": 0.6,
+            "risk": 0.3
+        },
+        {
+            "from": "ml_engineer",
+            "to": "cto",
+            "transition_years": 7,
+            "difficulty": 0.85,
+            "risk": 0.4
+        },
+        {
+            "from": "ml_engineer",
+            "to": "startup_founder",
+            "transition_years": 3,
+            "difficulty": 0.75,
+            "risk": 0.65
+        },
+        {
+            "from": "devops_engineer",
+            "to": "tech_lead",
+            "transition_years": 3,
+            "difficulty": 0.65,
+            "risk": 0.3
+        },
+        {
+            "from": "product_manager",
+            "to": "cto",
+            "transition_years": 6,
+            "difficulty": 0.8,
+            "risk": 0.4
+        },
+        {
+            "from": "product_manager",
+            "to": "startup_founder",
+            "transition_years": 3,
+            "difficulty": 0.7,
+            "risk": 0.6
+        },
+        {
+            "from": "freelancer",
+            "to": "startup_founder",
+            "transition_years": 2,
+            "difficulty": 0.65,
+            "risk": 0.65
+        }
+    ]
+}
+</file>
+
+<file path="backend/data/loader.py">
+"""
+data/loader.py
+--------------
+Responsabilidad única: cargar y validar el dataset de carreras desde disco.
+Expone el grafo como estructura NetworkX lista para usar por el core.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import networkx as nx
+from loguru import logger
+from pydantic import BaseModel, Field, field_validator
+
+
+# ---------------------------------------------------------------------------
+# Modelos de validación (Pydantic v2)
+# ---------------------------------------------------------------------------
+
+class CareerNode(BaseModel):
+    """Representa un rol o posición profesional."""
+
+    id: str
+    label: str
+    type: str
+    skills: list[str]
+    avg_salary: float = Field(gt=0)
+    demand: float = Field(ge=0.0, le=1.0)
+    satisfaction: float = Field(ge=0.0, le=1.0)
+    years_experience: int = Field(ge=0)
+
+    @field_validator("skills")
+    @classmethod
+    def skills_not_empty(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("Un nodo debe tener al menos una habilidad.")
+        return v
+
+
+class CareerEdge(BaseModel):
+    """Representa una transición posible entre dos roles."""
+
+    from_: str = Field(alias="from")
+    to: str
+    transition_years: int = Field(ge=0)
+    difficulty: float = Field(ge=0.0, le=1.0)
+    risk: float = Field(ge=0.0, le=1.0)
+
+    model_config = {"populate_by_name": True}
+
+
+class CareerDataset(BaseModel):
+    """Schema completo del dataset."""
+
+    nodes: list[CareerNode]
+    edges: list[CareerEdge]
+
+
+# ---------------------------------------------------------------------------
+# Función principal
+# ---------------------------------------------------------------------------
+
+def load_career_graph(path: str | Path | None = None) -> nx.DiGraph:
+    """
+    Carga el dataset desde JSON y construye un grafo dirigido NetworkX.
+
+    Args:
+        path: Ruta al archivo JSON. Por defecto usa careers.json en la misma carpeta.
+
+    Returns:
+        nx.DiGraph con nodos y aristas enriquecidos con sus atributos.
+
+    Raises:
+        FileNotFoundError: Si el archivo no existe.
+        ValidationError: Si el JSON no cumple el schema.
+    """
+    if path is None:
+        path = Path(__file__).parent / "careers.json"
+
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset no encontrado: {path}")
+
+    logger.info(f"Cargando dataset desde {path}")
+
+    raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    dataset = CareerDataset(**raw)
+
+    graph = _build_graph(dataset)
+
+    logger.success(
+        f"Grafo cargado: {graph.number_of_nodes()} nodos, "
+        f"{graph.number_of_edges()} aristas"
+    )
+    return graph
+
+
+def _build_graph(dataset: CareerDataset) -> nx.DiGraph:
+    """Construye el DiGraph a partir del dataset validado."""
+    G = nx.DiGraph()
+
+    for node in dataset.nodes:
+        G.add_node(node.id, **node.model_dump())
+
+    for edge in dataset.edges:
+        G.add_edge(
+            edge.from_,
+            edge.to,
+            transition_years=edge.transition_years,
+            difficulty=edge.difficulty,
+            risk=edge.risk,
+        )
+
+    return G
+</file>
+
+<file path="backend/experiments/__init__.py">
+
+</file>
+
+<file path="backend/experiments/metrics.py">
+"""
+experiments/metrics.py
+----------------------
+Métricas del sistema para el diseño experimental.
+
+Mide el COMPORTAMIENTO del algoritmo, no solo la calidad de las
+trayectorias. Esto permite comparar configuraciones científicamente:
+    - ¿Qué beam_width produce más diversidad?
+    - ¿Qué perfil de restricciones genera más trayectorias Pareto-óptimas?
+    - ¿Cuánto tiempo tarda cada configuración?
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from core.evaluator import EvaluatedTrajectory
+
+
+@dataclass
+class ExperimentMetrics:
+    """Métricas capturadas durante una ejecución del generador."""
+
+    config_name: str
+    source_node: str
+    constraint_profile: str
+
+    # Conteos
+    trajectories_generated: int = 0
+    pareto_front_size: int = 0
+
+    # Calidad del frente de Pareto
+    avg_salary_growth: float = 0.0
+    avg_satisfaction: float = 0.0
+    avg_risk: float = 0.0
+    avg_years: float = 0.0
+
+    # Diversidad (cuán distintas son las trayectorias entre sí)
+    diversity_score: float = 0.0
+
+    # Tiempo de ejecución
+    execution_time_ms: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "config": self.config_name,
+            "source": self.source_node,
+            "profile": self.constraint_profile,
+            "n_trajectories": self.trajectories_generated,
+            "pareto_front_size": self.pareto_front_size,
+            "avg_salary_growth": round(self.avg_salary_growth, 4),
+            "avg_satisfaction": round(self.avg_satisfaction, 4),
+            "avg_risk": round(self.avg_risk, 4),
+            "avg_years": round(self.avg_years, 2),
+            "diversity": round(self.diversity_score, 4),
+            "time_ms": round(self.execution_time_ms, 2),
+        }
+
+
+def compute_metrics(
+    results: list[EvaluatedTrajectory],
+    config_name: str,
+    source_node: str,
+    constraint_profile: str,
+    execution_time_ms: float,
+) -> ExperimentMetrics:
+    """
+    Calcula todas las métricas para una ejecución del experimento.
+
+    La diversidad se mide como la distancia media entre pares de
+    trayectorias en el espacio de scores normalizados.
+    """
+    if not results:
+        return ExperimentMetrics(
+            config_name=config_name,
+            source_node=source_node,
+            constraint_profile=constraint_profile,
+            execution_time_ms=execution_time_ms,
+        )
+
+    pareto = [et for et in results if et.pareto_rank == 0]
+
+    scores_list = [et.scores for et in results]
+
+    avg_salary_growth = float(np.mean([s.get("salary_growth", 0) for s in scores_list]))
+    avg_satisfaction  = float(np.mean([s.get("avg_satisfaction", 0) for s in scores_list]))
+    avg_risk          = float(np.mean([s.get("avg_risk", 0) for s in scores_list]))
+    avg_years         = float(np.mean([s.get("total_years", 0) for s in scores_list]))
+
+    diversity = _compute_diversity(results)
+
+    return ExperimentMetrics(
+        config_name=config_name,
+        source_node=source_node,
+        constraint_profile=constraint_profile,
+        trajectories_generated=len(results),
+        pareto_front_size=len(pareto),
+        avg_salary_growth=avg_salary_growth,
+        avg_satisfaction=avg_satisfaction,
+        avg_risk=avg_risk,
+        avg_years=avg_years,
+        diversity_score=diversity,
+        execution_time_ms=execution_time_ms,
+    )
+
+
+def _compute_diversity(results: list[EvaluatedTrajectory]) -> float:
+    """
+    Diversidad = distancia euclidiana media entre todos los pares
+    de trayectorias en el espacio de scores normalizados.
+
+    Mayor diversidad → el algoritmo explora mejor el espacio.
+    """
+    if len(results) < 2:
+        return 0.0
+
+    keys = ["salary_growth", "avg_demand", "avg_satisfaction",
+            "total_years", "avg_risk", "avg_difficulty"]
+
+    matrix = np.array(
+        [[et.scores.get(k, 0.0) for k in keys] for et in results],
+        dtype=float,
+    )
+
+    # Normalizar columnas
+    col_min = matrix.min(axis=0)
+    col_max = matrix.max(axis=0)
+    col_range = np.where(col_max - col_min == 0, 1, col_max - col_min)
+    matrix = (matrix - col_min) / col_range
+
+    # Distancia media entre todos los pares
+    n = len(matrix)
+    total_dist = 0.0
+    count = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            total_dist += float(np.linalg.norm(matrix[i] - matrix[j]))
+            count += 1
+
+    return total_dist / count if count > 0 else 0.0
+</file>
+
+<file path="backend/experiments/runner.py">
+"""
+experiments/runner.py
+---------------------
+Ejecuta el diseño experimental completo de PathForge.
+
+Compara sistemáticamente:
+    - 4 configuraciones del generador (beam_width, max_depth)
+    - 4 perfiles de restricciones
+    - 4 nodos de inicio distintos
+
+Genera resultados en JSON para posterior análisis y visualización.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from loguru import logger
+from rich.console import Console
+from rich.progress import track
+
+from core.constraints import ConstraintProfiles, Constraint
+from core.generator import GeneratorConfig, TrajectoryGenerator
+from core.graph import CareerGraph
+from data.loader import load_career_graph
+from experiments.metrics import ExperimentMetrics, compute_metrics
+
+console = Console()
+
+# ---------------------------------------------------------------------------
+# Configuraciones a comparar
+# ---------------------------------------------------------------------------
+
+GENERATOR_CONFIGS: dict[str, GeneratorConfig] = {
+    "narrow_shallow": GeneratorConfig(beam_width=4,  max_depth=3, top_k_results=10),
+    "narrow_deep":    GeneratorConfig(beam_width=4,  max_depth=6, top_k_results=10),
+    "wide_shallow":   GeneratorConfig(beam_width=12, max_depth=3, top_k_results=10),
+    "wide_deep":      GeneratorConfig(beam_width=12, max_depth=6, top_k_results=10),
+}
+
+CONSTRAINT_PROFILES: dict[str, Constraint] = {
+    "conservative": ConstraintProfiles.conservative(),
+    "ambitious":    ConstraintProfiles.ambitious(),
+    "balanced":     ConstraintProfiles.balanced(),
+    "fast_track":   ConstraintProfiles.fast_track(),
+}
+
+SOURCE_NODES = ["junior_dev", "mid_dev", "data_scientist", "devops_engineer"]
+
+RESULTS_DIR = Path(__file__).parent / "results"
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+def run_all_experiments() -> list[ExperimentMetrics]:
+    """
+    Ejecuta todas las combinaciones del experimento y guarda resultados.
+
+    Total de ejecuciones:
+        4 configs × 4 perfiles × 4 fuentes = 64 experimentos
+    """
+    RESULTS_DIR.mkdir(exist_ok=True)
+
+    G = load_career_graph()
+    graph = CareerGraph(G)
+
+    all_metrics: list[ExperimentMetrics] = []
+
+    total = len(GENERATOR_CONFIGS) * len(CONSTRAINT_PROFILES) * len(SOURCE_NODES)
+    logger.info(f"Iniciando {total} experimentos...")
+
+    combinations = [
+        (cfg_name, cfg, prof_name, prof, source)
+        for cfg_name, cfg in GENERATOR_CONFIGS.items()
+        for prof_name, prof in CONSTRAINT_PROFILES.items()
+        for source in SOURCE_NODES
+    ]
+
+    for cfg_name, cfg, prof_name, prof, source in track(
+        combinations, description="Ejecutando experimentos..."
+    ):
+        experiment_id = f"{cfg_name}__{prof_name}__{source}"
+
+        try:
+            generator = TrajectoryGenerator(graph, cfg)
+
+            start = time.perf_counter()
+            results = generator.generate(source=source, constraints=prof)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+            metrics = compute_metrics(
+                results=results,
+                config_name=cfg_name,
+                source_node=source,
+                constraint_profile=prof_name,
+                execution_time_ms=elapsed_ms,
+            )
+            all_metrics.append(metrics)
+
+        except Exception as exc:
+            logger.warning(f"Experimento {experiment_id} falló: {exc}")
+
+    # Guardar resultados
+    output_path = RESULTS_DIR / "experiment_results.json"
+    data = [m.to_dict() for m in all_metrics]
+    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    logger.success(f"Resultados guardados en {output_path}")
+
+    _print_summary(all_metrics)
+    return all_metrics
+
+
+def _print_summary(metrics: list[ExperimentMetrics]) -> None:
+    """Imprime un resumen ejecutivo de los experimentos."""
+    if not metrics:
+        return
+
+    console.print("\n[bold cyan]═══ RESUMEN EXPERIMENTAL ═══[/bold cyan]")
+    console.print(f"  Experimentos ejecutados : [green]{len(metrics)}[/green]")
+
+    best_diversity = max(metrics, key=lambda m: m.diversity_score)
+    best_pareto    = max(metrics, key=lambda m: m.pareto_front_size)
+    fastest        = min(metrics, key=lambda m: m.execution_time_ms)
+
+    console.print(
+        f"  Mayor diversidad        : [yellow]{best_diversity.config_name}[/yellow] "
+        f"+ [yellow]{best_diversity.constraint_profile}[/yellow] "
+        f"(score={best_diversity.diversity_score:.3f})"
+    )
+    console.print(
+        f"  Mayor frente Pareto     : [yellow]{best_pareto.config_name}[/yellow] "
+        f"+ [yellow]{best_pareto.constraint_profile}[/yellow] "
+        f"(size={best_pareto.pareto_front_size})"
+    )
+    console.print(
+        f"  Más rápido              : [yellow]{fastest.config_name}[/yellow] "
+        f"({fastest.execution_time_ms:.1f}ms)"
+    )
+
+
+if __name__ == "__main__":
+    run_all_experiments()
+</file>
+
+<file path="backend/experiments/visualizer.py">
+"""
+experiments/visualizer.py
+-------------------------
+Genera gráficas del diseño experimental para el informe técnico.
+
+Produce 4 gráficas:
+    1. Diversidad por configuración del generador
+    2. Tamaño del frente de Pareto por perfil de restricciones
+    3. Trade-off crecimiento salarial vs riesgo
+    4. Tiempo de ejecución por configuración
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+
+RESULTS_PATH = Path(__file__).parent / "results" / "experiment_results.json"
+PLOTS_DIR    = Path(__file__).parent / "results" / "plots"
+
+
+def load_results() -> list[dict]:
+    if not RESULTS_PATH.exists():
+        raise FileNotFoundError(
+            f"No se encontraron resultados. Corre primero experiments/runner.py"
+        )
+    return json.loads(RESULTS_PATH.read_text())
+
+
+def plot_all() -> None:
+    """Genera y guarda todas las gráficas del experimento."""
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    data = load_results()
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("PathForge — Resultados Experimentales", fontsize=16, fontweight="bold")
+
+    _plot_diversity_by_config(axes[0, 0], data)
+    _plot_pareto_by_profile(axes[0, 1], data)
+    _plot_salary_vs_risk(axes[1, 0], data)
+    _plot_execution_time(axes[1, 1], data)
+
+    plt.tight_layout()
+    output = PLOTS_DIR / "experiment_summary.png"
+    plt.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Gráficas guardadas en {output}")
+
+
+# ---------------------------------------------------------------------------
+# Gráficas individuales
+# ---------------------------------------------------------------------------
+
+def _plot_diversity_by_config(ax: plt.Axes, data: list[dict]) -> None:
+    configs = ["narrow_shallow", "narrow_deep", "wide_shallow", "wide_deep"]
+    means = [
+        np.mean([d["diversity"] for d in data if d["config"] == c]) or 0
+        for c in configs
+    ]
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]
+    bars = ax.bar(configs, means, color=colors, alpha=0.85, edgecolor="white")
+    ax.bar_label(bars, fmt="%.3f", padding=3, fontsize=9)
+    ax.set_title("Diversidad promedio por configuración", fontweight="bold")
+    ax.set_ylabel("Diversity Score")
+    ax.set_ylim(0, max(means) * 1.2 if means else 1)
+    ax.tick_params(axis="x", rotation=15)
+    ax.grid(axis="y", alpha=0.3)
+
+
+def _plot_pareto_by_profile(ax: plt.Axes, data: list[dict]) -> None:
+    profiles = ["conservative", "ambitious", "balanced", "fast_track"]
+    means = [
+        np.mean([d["pareto_front_size"] for d in data if d["profile"] == p]) or 0
+        for p in profiles
+    ]
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]
+    bars = ax.bar(profiles, means, color=colors, alpha=0.85, edgecolor="white")
+    ax.bar_label(bars, fmt="%.1f", padding=3, fontsize=9)
+    ax.set_title("Tamaño del frente de Pareto por perfil", fontweight="bold")
+    ax.set_ylabel("Trayectorias en frente Pareto (promedio)")
+    ax.tick_params(axis="x", rotation=15)
+    ax.grid(axis="y", alpha=0.3)
+
+
+def _plot_salary_vs_risk(ax: plt.Axes, data: list[dict]) -> None:
+    profiles = ["conservative", "ambitious", "balanced", "fast_track"]
+    colors   = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]
+
+    for profile, color in zip(profiles, colors):
+        subset = [d for d in data if d["profile"] == profile]
+        if not subset:
+            continue
+        x = [d["avg_risk"] for d in subset]
+        y = [d["avg_salary_growth"] for d in subset]
+        ax.scatter(x, y, c=color, alpha=0.6, s=40, label=profile)
+
+    ax.set_title("Trade-off: Crecimiento salarial vs Riesgo", fontweight="bold")
+    ax.set_xlabel("Riesgo promedio")
+    ax.set_ylabel("Crecimiento salarial promedio")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+
+def _plot_execution_time(ax: plt.Axes, data: list[dict]) -> None:
+    configs = ["narrow_shallow", "narrow_deep", "wide_shallow", "wide_deep"]
+    means = [
+        np.mean([d["time_ms"] for d in data if d["config"] == c]) or 0
+        for c in configs
+    ]
+    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]
+    bars = ax.bar(configs, means, color=colors, alpha=0.85, edgecolor="white")
+    ax.bar_label(bars, fmt="%.1fms", padding=3, fontsize=9)
+    ax.set_title("Tiempo de ejecución por configuración", fontweight="bold")
+    ax.set_ylabel("Tiempo (ms)")
+    ax.tick_params(axis="x", rotation=15)
+    ax.grid(axis="y", alpha=0.3)
+
+
+if __name__ == "__main__":
+    plot_all()
+</file>
+
+<file path="backend/llm/__init__.py">
+
+</file>
+
+<file path="backend/llm/analyzer.py">
+"""
+llm/analyzer.py
+---------------
+Orquesta el análisis cualitativo de trayectorias usando Gemini.
+
+Responsabilidad: decidir QUÉ analizar, CUÁNDO llamar al LLM,
+y CÓMO estructurar la respuesta final que ve el usuario.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from loguru import logger
+
+from core.evaluator import EvaluatedTrajectory
+from llm.client import GeminiClient
+from llm.prompts import (
+    build_comparison_prompt,
+    build_ranking_prompt,
+    build_single_analysis_prompt,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tipos de resultado
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AnalysisResult:
+    """Resultado del análisis cualitativo de Gemini."""
+
+    analysis_type: str          # "comparison" | "single" | "ranking"
+    content: str                # Texto completo de la respuesta
+    trajectories_analyzed: int  # Cuántas trayectorias se analizaron
+    prompt_used: str            # El prompt enviado (para debugging/informe)
+
+    def __repr__(self) -> str:
+        preview = self.content[:100].replace("\n", " ")
+        return (
+            f"AnalysisResult("
+            f"type={self.analysis_type}, "
+            f"trajectories={self.trajectories_analyzed}, "
+            f"preview='{preview}...')"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Analizador principal
+# ---------------------------------------------------------------------------
+
+class TrajectoryAnalyzer:
+    """
+    Usa Gemini para generar análisis cualitativos de trayectorias.
+
+    Tres modos de análisis:
+    1. compare()  — compara múltiples trayectorias del frente de Pareto
+    2. analyze()  — análisis profundo de una sola trayectoria
+    3. rank_by()  — rankea trayectorias según un criterio en lenguaje natural
+    """
+
+    def __init__(
+        self,
+        client: GeminiClient | None = None,
+        user_profile: str = "profesional de tecnología",
+    ) -> None:
+        self._client = client or GeminiClient()
+        self._user_profile = user_profile
+
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+
+    def compare(
+        self,
+        trajectories: list[EvaluatedTrajectory],
+        max_trajectories: int = 5,
+    ) -> AnalysisResult:
+        """
+        Compara cualitativamente las mejores trayectorias del frente de Pareto.
+
+        Args:
+            trajectories: Lista evaluada (se usan las primeras max_trajectories).
+            max_trajectories: Límite para no sobrecargar el contexto del LLM.
+
+        Returns:
+            AnalysisResult con el análisis comparativo.
+        """
+        subset = trajectories[:max_trajectories]
+        logger.info(f"Comparando {len(subset)} trayectorias con Gemini...")
+
+        prompt = build_comparison_prompt(subset, self._user_profile)
+        response = self._client.complete(prompt)
+
+        return AnalysisResult(
+            analysis_type="comparison",
+            content=response,
+            trajectories_analyzed=len(subset),
+            prompt_used=prompt,
+        )
+
+    def analyze(self, trajectory: EvaluatedTrajectory) -> AnalysisResult:
+        """
+        Análisis profundo de una trayectoria específica.
+
+        Args:
+            trajectory: Trayectoria a analizar.
+
+        Returns:
+            AnalysisResult con el análisis detallado.
+        """
+        path_str = " → ".join(trajectory.trajectory.nodes)
+        logger.info(f"Analizando trayectoria: {path_str}")
+
+        prompt = build_single_analysis_prompt(trajectory, self._user_profile)
+        response = self._client.complete(prompt)
+
+        return AnalysisResult(
+            analysis_type="single",
+            content=response,
+            trajectories_analyzed=1,
+            prompt_used=prompt,
+        )
+
+    def rank_by(
+        self,
+        trajectories: list[EvaluatedTrajectory],
+        criterion: str,
+        max_trajectories: int = 5,
+    ) -> AnalysisResult:
+        """
+        Rankea trayectorias según un criterio expresado en lenguaje natural.
+
+        Args:
+            trajectories: Lista de trayectorias a rankear.
+            criterion: Objetivo del usuario, ej: "quiero ganar mucho pero rápido".
+            max_trajectories: Límite de trayectorias a considerar.
+
+        Returns:
+            AnalysisResult con el ranking justificado.
+        """
+        subset = trajectories[:max_trajectories]
+        logger.info(f"Rankeando {len(subset)} trayectorias por: '{criterion}'")
+
+        prompt = build_ranking_prompt(subset, criterion)
+        response = self._client.complete(prompt)
+
+        return AnalysisResult(
+            analysis_type="ranking",
+            content=response,
+            trajectories_analyzed=len(subset),
+            prompt_used=prompt,
+        )
+</file>
+
+<file path="backend/llm/client.py">
+"""
+llm/client.py
+-------------
+Cliente Gemini con reintentos, timeout y manejo de errores.
+
+Patrón: Adapter — abstrae la API de Gemini detrás de una interfaz
+simple para que el resto del sistema sea agnóstico al proveedor LLM.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from typing import Any
+
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", FutureWarning)
+    import google.generativeai as genai
+
+from dotenv import load_dotenv
+from loguru import logger
+
+load_dotenv()
+
+
+class GeminiClient:
+    """
+    Wrapper sobre google-generativeai con:
+    - Configuración centralizada
+    - Reintentos con backoff exponencial
+    - Logging automático de llamadas
+    """
+
+    def __init__(
+        self,
+        model: str | None = None,
+        temperature: float = 0.3,
+        max_output_tokens: int = 1024,
+        max_retries: int = 3,
+    ) -> None:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "GEMINI_API_KEY no encontrada. "
+                "Agrégala al archivo .env"
+            )
+
+        genai.configure(api_key=api_key)
+
+        self._model_name = model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        self._max_retries = max_retries
+        self._generation_config = genai.types.GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+        self._model = genai.GenerativeModel(
+            model_name=self._model_name,
+            generation_config=self._generation_config,
+        )
+
+        logger.info(f"GeminiClient inicializado con modelo: {self._model_name}")
+
+    def complete(self, prompt: str) -> str:
+        """
+        Envía un prompt y retorna la respuesta como string.
+        Reintenta hasta max_retries veces con backoff exponencial.
+
+        Args:
+            prompt: Texto del prompt.
+
+        Returns:
+            Respuesta del modelo como string limpio.
+
+        Raises:
+            RuntimeError: Si todos los reintentos fallan.
+        """
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                logger.debug(
+                    f"Gemini request | attempt={attempt} | "
+                    f"prompt_len={len(prompt)}"
+                )
+                response = self._model.generate_content(prompt)
+                result = response.text.strip()
+                logger.debug(f"Gemini response | len={len(result)}")
+                return result
+
+            except Exception as exc:
+                wait = 2 ** attempt  # backoff: 2s, 4s, 8s
+                logger.warning(
+                    f"Gemini error (attempt {attempt}/{self._max_retries}): "
+                    f"{exc}. Reintentando en {wait}s..."
+                )
+                if attempt == self._max_retries:
+                    raise RuntimeError(
+                        f"Gemini falló tras {self._max_retries} intentos: {exc}"
+                    ) from exc
+                time.sleep(wait)
+
+        return ""  # nunca llega aquí, satisface el type checker
+</file>
+
+<file path="backend/llm/prompts.py">
+"""
+llm/prompts.py
+--------------
+Prompts centralizados para análisis de trayectorias con Gemini.
+
+Principios de prompt engineering aplicados:
+- Rol explícito (system-like instruction al inicio)
+- Formato de salida especificado
+- Ejemplos implícitos en la estructura
+- Instrucciones negativas para evitar alucinaciones
+"""
+
+from __future__ import annotations
+
+from core.evaluator import EvaluatedTrajectory
+
+
+def build_comparison_prompt(
+    trajectories: list[EvaluatedTrajectory],
+    user_profile: str = "profesional de tecnología",
+) -> str:
+    """
+    Construye un prompt para que Gemini compare cualitativamente
+    un conjunto de trayectorias del frente de Pareto.
+
+    Args:
+        trajectories: Lista de trayectorias evaluadas (idealmente el frente Pareto).
+        user_profile: Descripción del perfil del usuario.
+
+    Returns:
+        Prompt listo para enviar a Gemini.
+    """
+    trajectories_text = _format_trajectories(trajectories)
+
+    return f"""Eres un experto en desarrollo de carrera profesional en tecnología con 20 años de experiencia como career coach en empresas de Silicon Valley, Europa y Latinoamérica.
+
+Se te presentan varias trayectorias profesionales alternativas para un {user_profile}. Cada una representa un trade-off óptimo (frente de Pareto) entre múltiples objetivos: crecimiento salarial, demanda laboral, satisfacción profesional, tiempo y riesgo.
+
+{trajectories_text}
+
+Analiza y compara estas trayectorias cualitativamente considerando:
+
+1. **Perfil de riesgo**: ¿Qué trayectoria es más conservadora? ¿Cuál es más arriesgada y por qué?
+2. **Contexto del mercado actual**: ¿Cuáles roles tienen mayor relevancia en el mercado tecnológico de 2025-2026?
+3. **Satisfacción a largo plazo**: ¿Qué trayectoria ofrece mayor realización profesional y por qué?
+4. **Recomendación personalizada**: Según los datos, ¿cuál recomendarías y para qué tipo de persona?
+5. **Alertas o consideraciones**: ¿Hay alguna trayectoria que parezca atractiva en números pero tenga riesgos ocultos?
+
+Responde en español. Sé específico, usa los datos numéricos para respaldar tus argumentos. No inventes información que no esté en los datos. Estructura tu respuesta con los 5 puntos numerados."""
+
+
+def build_single_analysis_prompt(
+    trajectory: EvaluatedTrajectory,
+    user_profile: str = "profesional de tecnología",
+) -> str:
+    """
+    Prompt para análisis profundo de una sola trayectoria.
+    Útil para cuando el usuario quiere explorar una en detalle.
+    """
+    path_str = " → ".join(trajectory.trajectory.nodes)
+    scores = trajectory.scores
+
+    return f"""Eres un experto en desarrollo de carrera profesional en tecnología.
+
+Analiza en profundidad la siguiente trayectoria profesional para un {user_profile}:
+
+**Trayectoria**: {path_str}
+**Crecimiento salarial**: {scores.get('salary_growth', 0):.1%} de aumento total
+**Salario final estimado**: ${scores.get('final_salary', 0):,.0f}/año
+**Demanda laboral promedio**: {scores.get('avg_demand', 0):.0%}
+**Satisfacción profesional promedio**: {scores.get('avg_satisfaction', 0):.0%}
+**Duración total estimada**: {scores.get('total_years', 0):.0f} años
+**Riesgo promedio de transición**: {scores.get('avg_risk', 0):.0%}
+**Dificultad promedio**: {scores.get('avg_difficulty', 0):.0%}
+
+Proporciona:
+1. **Resumen ejecutivo** (2-3 oraciones)
+2. **Puntos fuertes** de esta trayectoria
+3. **Desafíos principales** que enfrentará quien la siga
+4. **Habilidades clave** que debe desarrollar en cada transición
+5. **Veredicto final**: ¿Vale la pena? ¿Para quién es ideal?
+
+Responde en español. Sé concreto y accionable."""
+
+
+def build_ranking_prompt(
+    trajectories: list[EvaluatedTrajectory],
+    criterion: str,
+) -> str:
+    """
+    Prompt para que Gemini rankee trayectorias según un criterio específico
+    expresado en lenguaje natural.
+
+    Args:
+        trajectories: Trayectorias a rankear.
+        criterion: Criterio en lenguaje natural, ej: "quiero ganar mucho pero rápido"
+    """
+    trajectories_text = _format_trajectories(trajectories)
+
+    return f"""Eres un experto en carreras tecnológicas y optimización de decisiones profesionales.
+
+El usuario tiene el siguiente objetivo: "{criterion}"
+
+Aquí están las trayectorias disponibles:
+
+{trajectories_text}
+
+Basándote EXCLUSIVAMENTE en los datos numéricos proporcionados y en el objetivo del usuario:
+
+1. Rankea las trayectorias de mejor a peor para este objetivo específico.
+2. Para cada una, explica en 1-2 oraciones por qué está en esa posición.
+3. Indica cuál es tu recomendación final y por qué.
+
+Formato de respuesta:
+🥇 [Trayectoria] — [Razón]
+🥈 [Trayectoria] — [Razón]
+🥉 [Trayectoria] — [Razón]
+...
+
+Recomendación final: [Tu recomendación con justificación]
+
+Responde en español."""
+
+
+# ---------------------------------------------------------------------------
+# Helper interno
+# ---------------------------------------------------------------------------
+
+def _format_trajectories(trajectories: list[EvaluatedTrajectory]) -> str:
+    """Formatea una lista de trayectorias como texto estructurado para el prompt."""
+    lines: list[str] = []
+
+    for i, et in enumerate(trajectories, 1):
+        path_str = " → ".join(et.trajectory.nodes)
+        s = et.scores
+        lines.append(
+            f"**Trayectoria {i}**: {path_str}\n"
+            f"  - Crecimiento salarial: {s.get('salary_growth', 0):.1%}\n"
+            f"  - Salario final: ${s.get('final_salary', 0):,.0f}/año\n"
+            f"  - Demanda laboral: {s.get('avg_demand', 0):.0%}\n"
+            f"  - Satisfacción: {s.get('avg_satisfaction', 0):.0%}\n"
+            f"  - Años totales: {s.get('total_years', 0):.0f}\n"
+            f"  - Riesgo: {s.get('avg_risk', 0):.0%}\n"
+            f"  - Dificultad: {s.get('avg_difficulty', 0):.0%}\n"
+            f"  - Rank Pareto: {et.pareto_rank}\n"
+        )
+
+    return "\n".join(lines)
+</file>
+
+<file path="backend/main_api.py">
+"""
+main_api.py
+-----------
+Servidor FastAPI con WebSocket para PathForge.
+
+Endpoints:
+    GET  /api/graph          → Retorna el grafo completo (nodos + aristas)
+    POST /api/generate       → Genera trayectorias con configuración custom
+    WS   /ws/explore         → Stream en tiempo real del Beam Search
+    POST /api/analyze        → Análisis cualitativo con Gemini
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from core.constraints import (
+    Constraint,
+    ConstraintProfiles,
+    MaxRiskConstraint,
+    MaxYearsConstraint,
+    MinSalaryConstraint,
+)
+from core.generator import GeneratorConfig, TrajectoryGenerator
+from core.graph import CareerGraph
+from data.loader import load_career_graph
+from llm.analyzer import TrajectoryAnalyzer
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="PathForge API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Servir frontend estático
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+# ---------------------------------------------------------------------------
+# Estado global (cargado una vez al inicio)
+# ---------------------------------------------------------------------------
+
+_career_graph: CareerGraph | None = None
+
+
+def get_graph() -> CareerGraph:
+    global _career_graph
+    if _career_graph is None:
+        _career_graph = CareerGraph(load_career_graph())
+    return _career_graph
+
+
+# ---------------------------------------------------------------------------
+# Schemas de entrada/salida
+# ---------------------------------------------------------------------------
+
+class NodeInput(BaseModel):
+    id: str
+    label: str
+    avg_salary: float = Field(gt=0)
+    demand: float = Field(ge=0, le=1)
+    satisfaction: float = Field(ge=0, le=1)
+    years_experience: int = Field(ge=0)
+    skills: list[str] = []
+    type: str = "role"
+
+
+class EdgeInput(BaseModel):
+    from_node: str
+    to_node: str
+    transition_years: int = Field(ge=0)
+    difficulty: float = Field(ge=0, le=1)
+    risk: float = Field(ge=0, le=1)
+
+
+class ExploreRequest(BaseModel):
+    source: str
+    nodes: list[NodeInput] = []
+    edges: list[EdgeInput] = []
+    profile: str = "balanced"
+    max_years: int = 12
+    max_risk: float = 0.6
+    beam_width: int = 10
+    max_depth: int = 6
+    top_k: int = 15
+    user_profile: str = "profesional de tecnología"
+
+
+class AnalyzeRequest(BaseModel):
+    trajectories: list[dict]
+    criterion: str = "mejor trayectoria general"
+    user_profile: str = "profesional de tecnología"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def build_constraint(request: ExploreRequest) -> Constraint:
+    """Construye restricción combinada desde los parámetros del request."""
+    profiles = {
+        "conservative": ConstraintProfiles.conservative(),
+        "ambitious":    ConstraintProfiles.ambitious(),
+        "balanced":     ConstraintProfiles.balanced(request.max_years),
+        "fast_track":   ConstraintProfiles.fast_track(),
+    }
+    base = profiles.get(request.profile, ConstraintProfiles.balanced())
+    extra = MaxRiskConstraint(request.max_risk) & MaxYearsConstraint(request.max_years)
+    return base & extra
+
+
+def build_graph_from_request(request: ExploreRequest) -> CareerGraph:
+    """
+    Si el request incluye nodos/aristas personalizados, construye un grafo
+    desde ellos. Si no, usa el grafo por defecto.
+    """
+    if request.nodes and request.edges:
+        import networkx as nx
+        G = nx.DiGraph()
+        for n in request.nodes:
+            G.add_node(n.id, **n.model_dump())
+        for e in request.edges:
+            G.add_edge(
+                e.from_node, e.to_node,
+                transition_years=e.transition_years,
+                difficulty=e.difficulty,
+                risk=e.risk,
+            )
+        return CareerGraph(G)
+    return get_graph()
+
+
+def trajectory_to_dict(et) -> dict:
+    """Serializa EvaluatedTrajectory a dict JSON-friendly."""
+    return {
+        "nodes": list(et.trajectory.nodes),
+        "scores": et.scores,
+        "pareto_rank": et.pareto_rank,
+        "crowding_distance": (
+            et.crowding_distance
+            if et.crowding_distance != float("inf")
+            else 9999.0
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# REST Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+async def serve_frontend():
+    return FileResponse("frontend/index.html")
+
+
+@app.get("/api/graph")
+async def get_default_graph():
+    """Retorna el grafo por defecto como JSON para renderizar en 3D."""
+    graph = get_graph()
+    nodes = [
+        {"id": nid, **graph.node_attrs(nid)}
+        for nid in graph.all_node_ids()
+    ]
+    edges = [
+        {"from": u, "to": v, **graph.edge_attrs(u, v)}
+        for u, v in graph._g.edges()
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
+@app.post("/api/generate")
+async def generate_trajectories(request: ExploreRequest):
+    """Genera trayectorias de forma síncrona (sin animación)."""
+    graph = build_graph_from_request(request)
+    constraints = build_constraint(request)
+    config = GeneratorConfig(
+        beam_width=request.beam_width,
+        max_depth=request.max_depth,
+        top_k_results=request.top_k,
+    )
+    generator = TrajectoryGenerator(graph, config)
+    results = generator.generate(request.source, constraints)
+    return {"trajectories": [trajectory_to_dict(et) for et in results]}
+
+
+@app.post("/api/analyze")
+async def analyze_trajectories(request: AnalyzeRequest):
+    """Análisis cualitativo con Gemini."""
+    try:
+        from core.evaluator import EvaluatedTrajectory
+        from core.graph import Trajectory
+
+        # Reconstruir objetos desde los dicts
+        evaluated = []
+        for t in request.trajectories:
+            traj = Trajectory(nodes=tuple(t["nodes"]))
+            et = EvaluatedTrajectory(
+                trajectory=traj,
+                scores=t["scores"],
+                pareto_rank=t["pareto_rank"],
+                crowding_distance=t.get("crowding_distance", 0.0),
+            )
+            evaluated.append(et)
+
+        analyzer = TrajectoryAnalyzer(user_profile=request.user_profile)
+        result = analyzer.rank_by(evaluated, request.criterion)
+
+        return {
+            "analysis": result.content,
+            "trajectories_analyzed": result.trajectories_analyzed,
+        }
+    except Exception as exc:
+        logger.error(f"Error en análisis: {exc}")
+        return {"analysis": f"Error al consultar Gemini: {exc}", "trajectories_analyzed": 0}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — Stream del Beam Search en tiempo real
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/explore")
+async def websocket_explore(websocket: WebSocket):
+    """
+    WebSocket que emite cada paso del Beam Search en tiempo real.
+
+    Protocolo:
+        Cliente → {"type": "start", "data": ExploreRequest}
+        Servidor → {"type": "step", "depth": N, "beam": [...], "completed": [...]}
+        Servidor → {"type": "result", "trajectories": [...]}
+        Servidor → {"type": "done"}
+    """
+    await websocket.accept()
+    logger.info("WebSocket conectado")
+
+    try:
+        raw = await websocket.receive_text()
+        message = json.loads(raw)
+
+        if message.get("type") != "start":
+            await websocket.send_json({"type": "error", "msg": "Esperaba type=start"})
+            return
+
+        request = ExploreRequest(**message["data"])
+        graph = build_graph_from_request(request)
+        constraints = build_constraint(request)
+
+        config = GeneratorConfig(
+            beam_width=request.beam_width,
+            max_depth=request.max_depth,
+            top_k_results=request.top_k,
+            emit_steps=True,
+        )
+
+        generator = TrajectoryGenerator(graph, config)
+        results_holder: list = []
+
+        async def emit_step(depth: int, beam: list, completed: list):
+            """Callback async que emite cada paso del beam al cliente."""
+            await websocket.send_json({
+                "type": "step",
+                "depth": depth,
+                "beam": [list(p) for p in beam],
+                "completed": [list(p) for p in completed[-20:]],  # últimas 20
+            })
+            await asyncio.sleep(0.05)  # pausa visual para la animación
+
+        # Ejecutar en thread separado para no bloquear el event loop
+        loop = asyncio.get_event_loop()
+
+        def sync_callback(depth, beam, completed):
+            asyncio.run_coroutine_threadsafe(
+                emit_step(depth, beam, completed), loop
+            )
+
+        results = await loop.run_in_executor(
+            None,
+            lambda: generator.generate(
+                source=request.source,
+                constraints=constraints,
+                step_callback=sync_callback,
+            ),
+        )
+
+        # Enviar resultados finales
+        await websocket.send_json({
+            "type": "result",
+            "trajectories": [trajectory_to_dict(et) for et in results],
+        })
+        await websocket.send_json({"type": "done"})
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket desconectado")
+    except Exception as exc:
+        logger.error(f"WebSocket error: {exc}")
+        await websocket.send_json({"type": "error", "msg": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    uvicorn.run("main_api:app", host="0.0.0.0", port=8000, reload=True)
+</file>
+
+<file path="backend/tests/__init__.py">
+
+</file>
+
+<file path="backend/tests/test_generator.py">
+
+</file>
+
+<file path="backend/tests/test_graph.py">
+"""tests/test_graph.py — Tests del grafo y scoring."""
+
+import pytest
+from core.graph import CareerGraph, Trajectory
+from data.loader import load_career_graph
+
+
+@pytest.fixture
+def graph() -> CareerGraph:
+    return CareerGraph(load_career_graph())
+
+
+def test_graph_loads(graph):
+    assert graph._g.number_of_nodes() == 12
+    assert graph._g.number_of_edges() == 26
+
+
+def test_successors_exist(graph):
+    successors = graph.successors("junior_dev")
+    assert len(successors) > 0
+    assert "mid_dev" in successors
+
+
+def test_score_trajectory_valid(graph):
+    path = ("junior_dev", "mid_dev", "senior_dev")
+    scores = graph.score_trajectory(path)
+    assert "salary_growth" in scores
+    assert scores["salary_growth"] > 0
+    assert 0 <= scores["avg_risk"] <= 1
+
+
+def test_score_trajectory_too_short(graph):
+    """Trayectorias de 1 nodo no tienen scores."""
+    scores = graph.score_trajectory(("junior_dev",))
+    assert scores == {}
+
+
+def test_iter_paths_no_cycles(graph):
+    """Los caminos generados no deben contener ciclos."""
+    paths = list(graph.iter_paths_from("junior_dev", max_depth=4))
+    for path in paths:
+        assert len(path) == len(set(path)), f"Ciclo detectado en: {path}"
+</file>
+
+<file path="backend/tests/test_llm.py">
+
+</file>
+
+<file path="frontend/css/style.css">
+
+</file>
+
+<file path="frontend/index.html">
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>PathForge — Career Universe Explorer</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;500;600&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --void:#00000a;--space:#030b1a;--nebula:#071428;
+  --panel:rgba(3,11,26,0.9);--panel2:rgba(5,15,35,0.96);
+  --border:rgba(0,200,255,0.18);--border2:rgba(0,200,255,0.38);
+  --pulsar:#00c8ff;--nova:#ff6b35;--quasar:#b44dff;
+  --gold:#ffc843;--green:#00ff8c;--red:#ff3355;
+  --text:#ddeeff;--muted:rgba(221,238,255,0.4);
+  --gb:0 0 18px rgba(0,200,255,0.45);
+  --gg:0 0 18px rgba(255,200,67,0.45);
+  --gp:0 0 18px rgba(180,77,255,0.45);
+}
+html,body{width:100%;height:100%;background:var(--void);color:var(--text);font-family:'Rajdhani',sans-serif;overflow:hidden}
+#space-canvas{position:fixed;inset:0;z-index:0}
+#app{position:relative;z-index:10;width:100vw;height:100vh;display:flex;flex-direction:column}
+#topbar{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;flex-shrink:0;background:linear-gradient(180deg,rgba(0,0,15,.97) 0%,transparent 100%);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-orb{width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#80eeff,var(--pulsar),var(--quasar));box-shadow:var(--gb),0 0 40px rgba(0,200,255,.3);animation:orb 3s ease-in-out infinite;flex-shrink:0}
+@keyframes orb{0%,100%{transform:scale(1)}50%{transform:scale(1.1);box-shadow:0 0 30px rgba(0,200,255,.7),0 0 60px rgba(180,77,255,.4)}}
+.brand-name{font-family:'Orbitron',monospace;font-size:19px;font-weight:900;letter-spacing:5px;background:linear-gradient(90deg,var(--pulsar),var(--quasar),var(--gold));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.brand-sub{font-size:10px;color:var(--muted);letter-spacing:2.5px;text-transform:uppercase}
+.nav-tabs{display:flex;gap:3px}
+.nav-tab{padding:7px 18px;border:1px solid transparent;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);background:none;cursor:pointer;transition:all .25s;position:relative}
+.nav-tab.active{color:var(--pulsar);border-color:var(--border2);background:rgba(0,200,255,.07);box-shadow:var(--gb)}
+.nav-tab:hover:not(.active){color:var(--text);border-color:var(--border)}
+.tab-badge{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);display:none}
+.nav-tab.has-data .tab-badge{display:block}
+.hdr-stats{display:flex;gap:20px}
+.hstat{text-align:center}
+.hstat-v{font-family:'Orbitron',monospace;font-size:15px;font-weight:700;color:var(--pulsar)}
+.hstat-l{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase}
+#views{flex:1;overflow:hidden;position:relative}
+.view{position:absolute;inset:0;display:none;overflow:hidden}
+.view.active{display:flex}
+/* SETUP */
+#view-setup{flex-direction:row}
+.setup-left{width:330px;flex-shrink:0;background:var(--panel2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.setup-left::-webkit-scrollbar{width:3px}
+.setup-left::-webkit-scrollbar-thumb{background:var(--border2)}
+.setup-right{flex:1;display:flex;flex-direction:column;background:rgba(0,0,0,.12);overflow:hidden}
+.ph{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px;flex-shrink:0}
+.ph-dot{width:7px;height:7px;border-radius:50%;background:var(--pulsar);box-shadow:0 0 8px var(--pulsar);animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.ph h2{font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2.5px;color:var(--pulsar);text-transform:uppercase}
+.fsec{padding:14px 16px;border-bottom:1px solid var(--border)}
+.fsec:last-child{border-bottom:none}
+.stitle{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.stitle::after{content:'';flex:1;height:1px;background:var(--border)}
+.lbl{display:block;font-size:10px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:5px}
+.inp{width:100%;background:rgba(0,200,255,.05);border:1px solid var(--border);color:var(--text);padding:8px 11px;font-family:'Rajdhani',sans-serif;font-size:14px;outline:none;transition:border-color .2s}
+.inp:focus{border-color:var(--pulsar);box-shadow:var(--gb)}
+.inp::placeholder{color:var(--muted)}
+.sel{width:100%;background:rgba(0,200,255,.05);border:1px solid var(--border);color:var(--text);padding:8px 11px;font-family:'Rajdhani',sans-serif;font-size:14px;outline:none;cursor:pointer}
+.sel option{background:var(--nebula)}
+.rng{width:100%;accent-color:var(--pulsar);cursor:pointer;margin-top:3px}
+.rng-v{font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--pulsar);min-width:36px;text-align:right}
+.fg{margin-bottom:12px}
+.node-list{display:flex;flex-direction:column;gap:4px;margin-bottom:9px}
+.node-item{display:flex;align-items:center;gap:7px;padding:7px 9px;background:rgba(0,200,255,.04);border:1px solid rgba(0,200,255,.1);cursor:pointer;transition:all .2s;position:relative}
+.node-item:hover{border-color:var(--pulsar);background:rgba(0,200,255,.1)}
+.node-item.sel-node{border-color:var(--gold);background:rgba(255,200,67,.06)}
+.n-star{width:9px;height:9px;border-radius:50%;flex-shrink:0;box-shadow:0 0 5px currentColor}
+.n-name{font-size:13px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.n-sal{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--green)}
+.n-rm{width:15px;height:15px;background:none;border:1px solid var(--red);color:var(--red);font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s;flex-shrink:0}
+.node-item:hover .n-rm{opacity:1}
+.edge-list{display:flex;flex-direction:column;gap:3px;margin-bottom:9px}
+.edge-item{display:flex;align-items:center;gap:5px;padding:5px 7px;background:rgba(180,77,255,.04);border:1px solid rgba(180,77,255,.12);font-size:11px}
+.e-from,.e-to{opacity:.8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.e-arr{color:var(--quasar);flex-shrink:0}
+.e-rm{margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:11px;opacity:.5;flex-shrink:0}
+.e-rm:hover{opacity:1}
+.btn{padding:8px 13px;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;border:1px solid;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn-c{background:rgba(0,200,255,.08);border-color:var(--pulsar);color:var(--pulsar)}
+.btn-c:hover{background:rgba(0,200,255,.2);box-shadow:var(--gb)}
+.btn-g{background:rgba(255,200,67,.08);border-color:var(--gold);color:var(--gold)}
+.btn-g:hover{background:rgba(255,200,67,.2);box-shadow:var(--gg)}
+.btn-launch{background:linear-gradient(135deg,rgba(0,200,255,.12),rgba(180,77,255,.12));border-color:var(--quasar);color:var(--text);font-size:11px;padding:13px 18px;width:100%}
+.btn-launch:hover{background:linear-gradient(135deg,rgba(0,200,255,.25),rgba(180,77,255,.25));box-shadow:var(--gp);transform:translateY(-1px)}
+.btn-launch:disabled{opacity:.35;cursor:not-allowed;transform:none}
+.btn-sm{padding:5px 9px;font-size:8px}
+.btn-full{width:100%}
+.btn-row{display:flex;gap:7px}
+.mt8{margin-top:8px}
+.divider{height:1px;background:var(--border);margin:10px 0}
+.empty-msg{color:var(--muted);font-size:12px;text-align:center;padding:16px 0}
+.preview-wrap{flex:1;position:relative;min-height:0}
+#preview-canvas{width:100%;height:100%;display:block}
+#preview-msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:8px}
+#preview-msg h3{font-family:'Orbitron',monospace;font-size:16px;letter-spacing:4px;color:var(--muted)}
+#preview-msg p{font-size:12px;color:var(--muted);letter-spacing:1px;text-align:center;padding:0 40px}
+/* UNIVERSE */
+#view-universe{position:relative}
+#three-canvas{position:absolute;inset:0;z-index:0;pointer-events:all}
+.univ-ui{position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;pointer-events:none}
+.univ-toolbar{display:flex;align-items:center;gap:6px;padding:10px 16px;background:linear-gradient(180deg,rgba(0,0,15,.85) 0%,transparent 100%);flex-shrink:0}
+.univ-toolbar>*{pointer-events:all}
+.ctrl-btn{width:34px;height:34px;background:var(--panel);border:1px solid var(--border);color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .2s}
+.ctrl-btn:hover{border-color:var(--pulsar);color:var(--pulsar);box-shadow:var(--gb)}
+.ctrl-btn.on{border-color:var(--pulsar);color:var(--pulsar);background:rgba(0,200,255,.12)}
+.ctrl-sep{width:1px;height:24px;background:var(--border);margin:0 4px}
+.univ-spacer{flex:1;pointer-events:none}
+.univ-statusbar{background:rgba(0,0,15,.9);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 18px;height:40px;gap:28px;flex-shrink:0;pointer-events:all}
+.sb-item{display:flex;align-items:center;gap:7px;font-size:11px}
+.sb-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.sb-lbl{color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-size:9px}
+.sb-val{font-family:'Share Tech Mono',monospace;color:var(--text)}
+.sb-hint{margin-left:auto;font-size:9px;color:var(--muted);letter-spacing:1px}
+#srch-overlay{position:absolute;inset:0;z-index:50;background:rgba(0,0,15,.72);backdrop-filter:blur(5px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;opacity:0;pointer-events:none;transition:opacity .4s}
+#srch-overlay.show{opacity:1;pointer-events:all}
+.so-title{font-family:'Orbitron',monospace;font-size:20px;font-weight:900;letter-spacing:5px;background:linear-gradient(90deg,var(--pulsar),var(--quasar));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.so-sub{font-size:12px;color:var(--muted);letter-spacing:2px}
+.so-bar{width:340px;height:3px;background:rgba(0,200,255,.12);overflow:hidden;border:1px solid var(--border)}
+.so-fill{height:100%;background:linear-gradient(90deg,var(--quasar),var(--pulsar),var(--gold));width:0%;transition:width .4s}
+.so-stat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--pulsar)}
+.so-dots{display:flex;gap:8px}
+.so-d{width:9px;height:9px;border-radius:50%;border:1px solid var(--border);background:transparent;transition:all .3s}
+.so-d.on{background:var(--pulsar);box-shadow:0 0 10px var(--pulsar)}
+#node-popup{position:fixed;background:var(--panel2);border:1px solid var(--pulsar);box-shadow:var(--gb);padding:13px 15px;width:230px;z-index:200;pointer-events:none;opacity:0;transition:opacity .2s;backdrop-filter:blur(16px)}
+#node-popup.show{opacity:1}
+#np-title{font-family:'Orbitron',monospace;font-size:10px;color:var(--pulsar);letter-spacing:2px;margin-bottom:9px}
+.np-row{display:flex;justify-content:space-between;margin-bottom:3px;font-size:12px}
+.np-k{color:var(--muted)}.np-v{font-family:'Share Tech Mono',monospace}
+/* ANALYSIS */
+#view-analysis{flex-direction:column;overflow-y:auto}
+#view-analysis::-webkit-scrollbar{width:4px}
+#view-analysis::-webkit-scrollbar-thumb{background:var(--border2)}
+.analysis-wrap{padding:22px;max-width:1180px;margin:0 auto;width:100%}
+.ah{margin-bottom:20px}
+.ah h2{font-family:'Orbitron',monospace;font-size:14px;letter-spacing:4px;color:var(--pulsar);margin-bottom:5px}
+.ah p{font-size:12px;color:var(--muted);letter-spacing:.5px}
+.best-sec{background:var(--panel2);border:1px solid var(--gold);padding:18px;margin-bottom:22px;position:relative;overflow:hidden}
+.best-sec::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(255,200,67,.05) 0%,transparent 70%);pointer-events:none}
+.bt-crown{font-size:22px;margin-bottom:6px}
+.bt-title{font-family:'Orbitron',monospace;font-size:12px;color:var(--gold);letter-spacing:3px;margin-bottom:10px}
+.bt-path{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-bottom:12px}
+.bt-node{padding:3px 10px;border:1px solid var(--gold);color:var(--gold);background:rgba(255,200,67,.08);font-size:11px;font-family:'Rajdhani',sans-serif;font-weight:600}
+.bt-arrow{color:var(--muted);font-size:16px}
+.bt-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.bt-m{text-align:center;padding:9px;background:rgba(0,0,0,.3);border:1px solid rgba(255,200,67,.14)}
+.bt-mv{font-family:'Orbitron',monospace;font-size:15px;font-weight:700;color:var(--gold)}
+.bt-mk{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+.llm-panel{background:var(--panel2);border:1px solid var(--border);padding:18px;margin-bottom:22px}
+.llm-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.llm-title{font-family:'Orbitron',monospace;font-size:10px;color:var(--quasar);letter-spacing:2px}
+.llm-body{font-size:12px;line-height:1.8;color:var(--text);opacity:.9;white-space:pre-wrap;max-height:300px;overflow-y:auto}
+.llm-body::-webkit-scrollbar{width:3px}
+.llm-body::-webkit-scrollbar-thumb{background:var(--border2)}
+.llm-typing::after{content:'▋';animation:cb .7s step-end infinite;color:var(--pulsar)}
+@keyframes cb{0%,100%{opacity:1}50%{opacity:0}}
+.crit-row{display:flex;gap:9px;margin-bottom:12px}
+.crit-row .inp{flex:1}
+.traj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px;margin-bottom:24px}
+.tcard{background:var(--panel2);border:1px solid var(--border);padding:13px;cursor:pointer;transition:all .2s;position:relative;overflow:hidden}
+.tcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cc,var(--pulsar))}
+.tcard:hover{border-color:var(--cc,var(--pulsar));background:rgba(0,200,255,.04);transform:translateY(-2px)}
+.tcard.best-card{border-color:var(--gold)}
+.tcard.best-card::before{background:var(--gold)}
+.tc-badge{position:absolute;top:9px;right:9px;font-family:'Orbitron',monospace;font-size:7px;padding:2px 6px;border:1px solid;letter-spacing:1px}
+.r0{color:var(--gold);border-color:var(--gold);background:rgba(255,200,67,.08)}
+.r1{color:var(--quasar);border-color:var(--quasar);background:rgba(180,77,255,.08)}
+.r2{color:var(--pulsar);border-color:var(--pulsar);background:rgba(0,200,255,.08)}
+.tc-path{font-family:'Share Tech Mono',monospace;font-size:9px;line-height:1.7;margin-bottom:9px;padding-right:55px;word-break:break-all}
+.tc-mets{display:grid;grid-template-columns:repeat(3,1fr);gap:3px}
+.tc-m{padding:3px 5px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06);text-align:center}
+.tc-mv{font-family:'Share Tech Mono',monospace;font-size:10px;display:block}
+.tc-mk{font-size:8px;color:var(--muted);text-transform:uppercase}
+.step-sec{margin-top:22px}
+.step-sec-title{font-family:'Orbitron',monospace;font-size:10px;color:var(--text);letter-spacing:2px;margin-bottom:12px}
+.step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
+.step-card{background:var(--panel);border:1px solid var(--border);padding:13px}
+.step-num{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);margin-bottom:5px}
+.step-nodes{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}
+.step-n{padding:3px 9px;font-size:11px;font-weight:600;border:1px solid var(--border2);background:rgba(0,200,255,.06)}
+.step-n.src-n{border-color:var(--green);color:var(--green);background:rgba(0,255,140,.06)}
+.step-n.dst-n{border-color:var(--gold);color:var(--gold);background:rgba(255,200,67,.06)}
+.step-desc{font-size:12px;color:var(--muted);line-height:1.6}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,15,.85);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);opacity:0;pointer-events:none;transition:opacity .3s}
+.modal-bg.show{opacity:1;pointer-events:all}
+.modal{background:var(--panel2);border:1px solid var(--border2);box-shadow:var(--gb);width:390px;max-height:84vh;overflow-y:auto;padding:22px}
+.modal::-webkit-scrollbar{width:3px}
+.modal::-webkit-scrollbar-thumb{background:var(--border2)}
+.modal h2{font-family:'Orbitron',monospace;font-size:12px;color:var(--pulsar);letter-spacing:3px;margin-bottom:18px}
+.modal-acts{display:flex;gap:9px;margin-top:14px}
+#toasts{position:fixed;top:68px;right:18px;z-index:600;display:flex;flex-direction:column;gap:6px}
+.toast{padding:8px 13px;background:var(--panel2);border:1px solid var(--border);font-size:12px;animation:tsl .3s ease;max-width:270px;backdrop-filter:blur(12px)}
+@keyframes tsl{from{transform:translateX(110%);opacity:0}to{transform:none;opacity:1}}
+.t-ok{border-color:var(--green);color:var(--green)}
+.t-err{border-color:var(--red);color:var(--red)}
+.t-info{border-color:var(--pulsar);color:var(--pulsar)}
+#loading{position:fixed;inset:0;background:var(--void);z-index:900;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .8s}
+#loading.out{opacity:0;pointer-events:none}
+.ld-logo{font-family:'Orbitron',monospace;font-size:48px;font-weight:900;letter-spacing:10px;background:linear-gradient(90deg,var(--pulsar),var(--quasar),var(--gold));-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:glt 2s ease-in-out infinite}
+@keyframes glt{0%,100%{filter:brightness(1)}50%{filter:brightness(1.5) drop-shadow(0 0 20px rgba(0,200,255,.6))}}
+.ld-sub{font-size:12px;color:var(--muted);letter-spacing:4px;text-transform:uppercase}
+.ld-bar{width:160px;height:2px;background:rgba(0,200,255,.1);overflow:hidden}
+.ld-fill{height:100%;background:linear-gradient(90deg,var(--quasar),var(--pulsar));animation:ldf 1.5s ease-in-out infinite}
+@keyframes ldf{0%{width:0%;margin-left:0}50%{width:55%;margin-left:20%}100%{width:0%;margin-left:100%}}
+*{scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+</style>
+</head>
+<body>
+<canvas id="space-canvas"></canvas>
+<div id="loading"><div class="ld-logo">PATHFORGE</div><div class="ld-sub">Initializing Universe Engine</div><div class="ld-bar"><div class="ld-fill"></div></div></div>
+<div id="toasts"></div>
+<div id="node-popup"><div id="np-title"></div><div id="np-body"></div></div>
+
+<!-- MODAL: Add Node -->
+<div class="modal-bg" id="modal-node">
+<div class="modal">
+  <h2>⭐ Add Star Node</h2>
+  <div class="fg"><label class="lbl">Node ID</label><input class="inp" id="nn-id" placeholder="senior_dev"/></div>
+  <div class="fg"><label class="lbl">Display Label</label><input class="inp" id="nn-label" placeholder="Senior Developer"/></div>
+  <div class="fg"><label class="lbl">Average Salary (USD/year)</label><input class="inp" id="nn-salary" type="number" placeholder="75000"/></div>
+  <div class="fg"><label class="lbl">Market Demand <span id="nn-dem-v" style="color:var(--pulsar)">0.80</span></label><input class="rng" id="nn-dem" type="range" min="0" max="1" step="0.05" value="0.8"/></div>
+  <div class="fg"><label class="lbl">Job Satisfaction <span id="nn-sat-v" style="color:var(--pulsar)">0.75</span></label><input class="rng" id="nn-sat" type="range" min="0" max="1" step="0.05" value="0.75"/></div>
+  <div class="fg"><label class="lbl">Experience Required (years)</label><input class="inp" id="nn-exp" type="number" value="3"/></div>
+  <div class="fg"><label class="lbl">Skills (comma separated)</label><input class="inp" id="nn-skills" placeholder="python, leadership"/></div>
+  <div class="modal-acts">
+    <button class="btn btn-c" onclick="closeModal('modal-node')">Cancel</button>
+    <button class="btn btn-g btn-full" onclick="confirmAddNode()">Add Star</button>
+  </div>
+</div>
+</div>
+
+<!-- MODAL: Add Edge -->
+<div class="modal-bg" id="modal-edge">
+<div class="modal">
+  <h2>🌀 Add Wormhole</h2>
+  <div class="fg"><label class="lbl">From Node</label><select class="sel" id="ee-from"></select></div>
+  <div class="fg"><label class="lbl">To Node</label><select class="sel" id="ee-to"></select></div>
+  <div class="fg"><label class="lbl">Transition Years</label><input class="inp" id="ee-years" type="number" value="2" min="0"/></div>
+  <div class="fg"><label class="lbl">Difficulty <span id="ee-diff-v" style="color:var(--pulsar)">0.50</span></label><input class="rng" id="ee-diff" type="range" min="0" max="1" step="0.05" value="0.5"/></div>
+  <div class="fg"><label class="lbl">Risk <span id="ee-risk-v" style="color:var(--pulsar)">0.30</span></label><input class="rng" id="ee-risk" type="range" min="0" max="1" step="0.05" value="0.3"/></div>
+  <div class="modal-acts">
+    <button class="btn btn-c" onclick="closeModal('modal-edge')">Cancel</button>
+    <button class="btn btn-g btn-full" onclick="confirmAddEdge()">Create Wormhole</button>
+  </div>
+</div>
+</div>
+
+<div id="app">
+<div id="topbar">
+  <div class="brand">
+    <div class="brand-orb"></div>
+    <div><div class="brand-name">PATHFORGE</div><div class="brand-sub">Career Universe · AI Powered</div></div>
+  </div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" id="tab-setup" onclick="switchView('setup')">01 · Setup<span class="tab-badge"></span></button>
+    <button class="nav-tab" id="tab-universe" onclick="switchView('universe')">02 · Universe<span class="tab-badge"></span></button>
+    <button class="nav-tab" id="tab-analysis" onclick="switchView('analysis')">03 · Analysis<span class="tab-badge"></span></button>
+  </div>
+  <div class="hdr-stats">
+    <div class="hstat"><div class="hstat-v" id="hs-n">0</div><div class="hstat-l">Stars</div></div>
+    <div class="hstat"><div class="hstat-v" id="hs-e">0</div><div class="hstat-l">Wormholes</div></div>
+    <div class="hstat"><div class="hstat-v" id="hs-f">0</div><div class="hstat-l">Futures</div></div>
+    <div class="hstat"><div class="hstat-v" id="hs-o">0</div><div class="hstat-l">Optimal</div></div>
+  </div>
+</div>
+
+<div id="views">
+
+<!-- VIEW 1: SETUP -->
+<div class="view active" id="view-setup">
+  <div class="setup-left">
+    <div class="ph"><div class="ph-dot"></div><h2>Mission Config</h2></div>
+    <div class="fsec">
+      <div class="stitle">Starting Point</div>
+      <div class="fg"><label class="lbl">Your Current Role</label><select class="sel" id="src-sel"><option value="">— select —</option></select></div>
+      <div class="fg"><label class="lbl">Your Profile</label><input class="inp" id="user-profile" value="junior developer beginning career"/></div>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Star Nodes (Career Roles)</div>
+      <div class="node-list" id="node-list"></div>
+      <div class="btn-row">
+        <button class="btn btn-c btn-sm" style="flex:1" onclick="openModal('modal-node')">+ Add Star</button>
+        <button class="btn btn-c btn-sm" style="flex:1" onclick="loadDefault()">Load Default</button>
+      </div>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Wormholes (Decisions)</div>
+      <div class="edge-list" id="edge-list"></div>
+      <button class="btn btn-c btn-sm btn-full mt8" onclick="openModal('modal-edge')">+ Add Wormhole</button>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Algorithm</div>
+      <div class="fg"><label class="lbl">Beam Width <span class="rng-v" id="bw-v">10</span></label><input class="rng" id="bw" type="range" min="2" max="20" step="1" value="10"/></div>
+      <div class="fg"><label class="lbl">Max Depth <span class="rng-v" id="md-v">6</span></label><input class="rng" id="md" type="range" min="2" max="8" step="1" value="6"/></div>
+      <div class="fg"><label class="lbl">Top K Results <span class="rng-v" id="tk-v">15</span></label><input class="rng" id="tk" type="range" min="5" max="30" step="1" value="15"/></div>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Constraints</div>
+      <div class="fg"><label class="lbl">Profile</label>
+        <select class="sel" id="prof-sel">
+          <option value="balanced">Balanced</option>
+          <option value="conservative">Conservative (low risk)</option>
+          <option value="ambitious">Ambitious (high salary)</option>
+          <option value="fast_track">Fast Track</option>
+        </select>
+      </div>
+      <div class="fg"><label class="lbl">Max Years <span class="rng-v" id="my-v">12</span></label><input class="rng" id="my" type="range" min="2" max="20" step="1" value="12"/></div>
+      <div class="fg"><label class="lbl">Max Risk <span class="rng-v" id="mr-v">0.60</span></label><input class="rng" id="mr" type="range" min="0.1" max="1" step="0.05" value="0.6"/></div>
+      <div class="fg"><label class="lbl">Analysis Criterion</label><input class="inp" id="criterion" value="best overall growth with manageable risk"/></div>
+    </div>
+    <div style="padding:12px;flex-shrink:0;border-top:1px solid var(--border)">
+      <button class="btn btn-launch" id="launch-btn" onclick="launchExploration()">🚀  Explore All Futures</button>
+    </div>
+  </div>
+  <div class="setup-right">
+    <div class="ph"><div class="ph-dot" style="background:var(--quasar);box-shadow:0 0 8px var(--quasar)"></div><h2>Live Graph Preview</h2></div>
+    <div class="preview-wrap">
+      <canvas id="preview-canvas"></canvas>
+      <div id="preview-msg"><h3>EMPTY UNIVERSE</h3><p>Add stars and wormholes to build your career graph</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- VIEW 2: UNIVERSE 3D -->
+<div class="view" id="view-universe">
+  <canvas id="three-canvas"></canvas>
+  <div id="srch-overlay">
+    <div class="so-title">EXPLORING FUTURES</div>
+    <div class="so-sub" id="so-sub">Initializing beam search...</div>
+    <div class="so-bar"><div class="so-fill" id="so-fill"></div></div>
+    <div class="so-stat" id="so-stat">—</div>
+    <div class="so-dots" id="so-dots"></div>
+  </div>
+  <div class="univ-ui">
+    <div class="univ-toolbar">
+      <button class="ctrl-btn on" id="cb-rot" title="Auto-rotate" onclick="toggleRot()">⟳</button>
+      <button class="ctrl-btn" title="Reset camera" onclick="resetCam()">⌂</button>
+      <div class="ctrl-sep"></div>
+      <button class="ctrl-btn" id="cb-traj" title="Toggle all trajectories" onclick="toggleAllTraj()">∿</button>
+      <button class="ctrl-btn on" id="cb-lbl" title="Toggle labels" onclick="toggleLbls()">A</button>
+      <div class="ctrl-sep"></div>
+      <button class="ctrl-btn" title="Zoom in" onclick="doZoom(-3)">+</button>
+      <button class="ctrl-btn" title="Zoom out" onclick="doZoom(3)">−</button>
+    </div>
+    <div class="univ-spacer"></div>
+    <div class="univ-statusbar">
+      <div class="sb-item"><div class="sb-dot" style="background:var(--green);box-shadow:0 0 5px var(--green)"></div><span class="sb-lbl">Status</span><span class="sb-val" id="sb-st">Ready</span></div>
+      <div class="sb-item"><div class="sb-dot" style="background:var(--pulsar)"></div><span class="sb-lbl">Depth</span><span class="sb-val" id="sb-d">—</span></div>
+      <div class="sb-item"><div class="sb-dot" style="background:var(--quasar)"></div><span class="sb-lbl">Beam</span><span class="sb-val" id="sb-b">—</span></div>
+      <div class="sb-item"><div class="sb-dot" style="background:var(--gold)"></div><span class="sb-lbl">Paths</span><span class="sb-val" id="sb-p">—</span></div>
+      <div class="sb-hint">Drag · Scroll zoom · Click nodes to inspect</div>
+    </div>
+  </div>
+</div>
+
+<!-- VIEW 3: ANALYSIS -->
+<div class="view" id="view-analysis">
+<div class="analysis-wrap">
+  <div class="ah"><h2>MULTIVERSE ANALYSIS</h2><p>All discovered trajectories ranked by Pareto optimality · Click any card to highlight in Universe view</p></div>
+  <div id="best-sec" style="display:none">
+    <div class="best-sec">
+      <div class="bt-crown">🏆</div>
+      <div class="bt-title">OPTIMAL TRAJECTORY — PARETO FRONT #1</div>
+      <div class="bt-path" id="bt-path"></div>
+      <div class="bt-metrics" id="bt-mets"></div>
+    </div>
+  </div>
+  <div class="llm-panel">
+    <div class="llm-hdr">
+      <span class="llm-title">🤖 Gemini AI Analysis</span>
+      <button class="btn btn-c btn-sm" id="analyze-btn" onclick="requestAnalysis()">Analyze All</button>
+    </div>
+    <div class="crit-row"><input class="inp" id="crit-disp" value="best overall growth with manageable risk"/></div>
+    <div class="llm-body" id="llm-body">Awaiting trajectory data... Run exploration first.</div>
+  </div>
+  <div class="ah" style="margin-top:6px"><h2 style="font-size:11px">ALL FUTURES <span id="traj-count" style="color:var(--muted);font-size:10px"></span></h2></div>
+  <div class="traj-grid" id="traj-grid"><div class="empty-msg" style="grid-column:1/-1">No trajectories yet. Run exploration from Setup tab.</div></div>
+  <div class="step-sec" id="step-sec" style="display:none">
+    <div class="step-sec-title">DECISION BREAKDOWN — BEST TRAJECTORY</div>
+    <div class="step-grid" id="step-grid"></div>
+  </div>
+</div>
+</div>
+
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════
+   PATHFORGE — Main Application
+   A. State
+   B. SpaceBG  — animated 2D space background
+   C. Preview  — 2D setup preview
+   D. U3D      — Three.js 3D universe
+   E. API      — backend calls
+   F. Demo     — offline simulation
+   G. UI       — helpers
+   H. Logic    — exploration + analysis
+   I. Init
+═══════════════════════════════════════════════════════ */
+
+// A. STATE
+const S={nodes:[],edges:[],trajectories:[],exploring:false,autoRot:true,showLbls:true,showAllTraj:false,currentView:'setup',API:'http://localhost:8000'};
+const PAL=[0x00c8ff,0xb44dff,0xffc843,0xff6b35,0x00ff8c,0xff3355,0x4fc3f7,0xce93d8,0xffcc02,0x69f0ae,0xf48fb1,0x80deea,0xff9800,0x00bcd4,0x9c27b0,0x4caf50];
+const pc=i=>'#'+PAL[i%PAL.length].toString(16).padStart(6,'0');
+
+// B. SPACE BACKGROUND — deep space with constellations, planets, shooting stars
+const SpaceBG=(()=>{
+  let cv,cx,W,H,stars=[],nebulae=[],planets=[],shoots=[],consts=[],t=0;
+  function init(){
+    cv=document.getElementById('space-canvas');cx=cv.getContext('2d');
+    resize();window.addEventListener('resize',()=>{resize();build();});build();render();
+  }
+  function resize(){W=cv.width=window.innerWidth;H=cv.height=window.innerHeight;}
+  function build(){
+    stars=[];
+    for(let i=0;i<800;i++) stars.push({x:Math.random()*W,y:Math.random()*H,r:.2+Math.random()*1.4,a:.3+Math.random()*.7,da:(Math.random()-.5)*.007,tw:Math.random()*Math.PI*2,col:['#a0cfff','#ffe8b0','#c0a0ff','#ffffff','#80ffcc'][Math.floor(Math.random()*5)]});
+    nebulae=[];
+    const nc=[['#0a1a3a','#1a0a2a'],['#0a2a1a','#1a2a0a'],['#2a0a1a','#1a1a2a'],['#0a1a2a','#2a0a2a'],['#1a0a3a','#0a1a1a']];
+    for(let i=0;i<7;i++) nebulae.push({x:Math.random()*W,y:Math.random()*H,rx:100+Math.random()*220,ry:70+Math.random()*160,rot:Math.random()*Math.PI,c1:nc[i%nc.length][0],c2:nc[i%nc.length][1],op:.1+Math.random()*.14});
+    consts=[
+      {pts:[[.08,.18],[.14,.13],[.21,.17],[.27,.12],[.34,.19]]},
+      {pts:[[.58,.08],[.64,.14],[.71,.09],[.69,.19],[.64,.24]]},
+      {pts:[[.84,.38],[.90,.33],[.92,.41],[.88,.47],[.82,.44]]},
+      {pts:[[.38,.68],[.44,.63],[.50,.71],[.48,.79],[.41,.77]]},
+      {pts:[[.18,.83],[.24,.78],[.31,.81],[.29,.89]]},
+      {pts:[[.55,.35],[.60,.28],[.66,.33],[.64,.42],[.58,.45]]},
+    ].map(c=>({pts:c.pts.map(p=>({x:p[0]*W,y:p[1]*H}))}));
+    planets=[
+      {x:W*.76,y:H*.19,r:17,h:220,ring:true,sp:.0003},
+      {x:W*.14,y:H*.72,r:10,h:40,ring:false,sp:.0005},
+      {x:W*.89,y:H*.76,r:7,h:160,ring:false,sp:.0008},
+      {x:W*.44,y:H*.87,r:13,h:300,ring:true,sp:.0002},
+    ];
+    shoots=[];
+  }
+  function render(){
+    requestAnimationFrame(render);t+=.007;
+    const g=cx.createRadialGradient(W*.5,H*.5,0,W*.5,H*.5,Math.max(W,H)*.72);
+    g.addColorStop(0,'#030b1a');g.addColorStop(.5,'#02060f');g.addColorStop(1,'#00000a');
+    cx.fillStyle=g;cx.fillRect(0,0,W,H);
+    nebulae.forEach(n=>{
+      cx.save();cx.translate(n.x,n.y);cx.rotate(n.rot+t*.008);
+      const ng=cx.createRadialGradient(0,0,0,0,0,n.rx);
+      ng.addColorStop(0,n.c1);ng.addColorStop(1,'transparent');
+      cx.globalAlpha=n.op*(.8+.2*Math.sin(t*.3));cx.scale(1,n.ry/n.rx);
+      cx.beginPath();cx.arc(0,0,n.rx,0,Math.PI*2);cx.fillStyle=ng;cx.fill();cx.restore();
+    });
+    cx.save();cx.strokeStyle='rgba(140,170,255,0.14)';cx.lineWidth=.7;cx.setLineDash([3,6]);
+    consts.forEach(c=>{cx.beginPath();c.pts.forEach((p,i)=>i===0?cx.moveTo(p.x,p.y):cx.lineTo(p.x,p.y));cx.stroke();});
+    cx.setLineDash([]);
+    consts.forEach(c=>c.pts.forEach(p=>{cx.beginPath();cx.arc(p.x,p.y,1.5,0,Math.PI*2);cx.fillStyle='rgba(180,210,255,0.6)';cx.fill();}));
+    cx.restore();
+    stars.forEach(s=>{
+      s.tw+=s.da;const a=s.a*(.5+.5*Math.sin(s.tw));
+      cx.save();cx.globalAlpha=a;cx.fillStyle=s.col;cx.beginPath();cx.arc(s.x,s.y,s.r,0,Math.PI*2);cx.fill();
+      if(s.r>1.1){cx.globalAlpha=a*.35;cx.strokeStyle=s.col;cx.lineWidth=.5;const fl=s.r*3;cx.beginPath();cx.moveTo(s.x-fl,s.y);cx.lineTo(s.x+fl,s.y);cx.moveTo(s.x,s.y-fl);cx.lineTo(s.x,s.y+fl);cx.stroke();}
+      cx.restore();
+    });
+    planets.forEach(p=>{
+      const px=p.x+Math.sin(t*p.sp*100)*12,py=p.y+Math.cos(t*p.sp*80)*7;
+      cx.save();
+      const gl=cx.createRadialGradient(px,py,0,px,py,p.r*3);
+      gl.addColorStop(0,`hsla(${p.h},80%,60%,.18)`);gl.addColorStop(1,'transparent');
+      cx.fillStyle=gl;cx.beginPath();cx.arc(px,py,p.r*3,0,Math.PI*2);cx.fill();
+      const bo=cx.createRadialGradient(px-p.r*.3,py-p.r*.3,p.r*.1,px,py,p.r);
+      bo.addColorStop(0,`hsl(${p.h+30},70%,72%)`);bo.addColorStop(.5,`hsl(${p.h},60%,42%)`);bo.addColorStop(1,`hsl(${p.h-20},70%,18%)`);
+      cx.fillStyle=bo;cx.beginPath();cx.arc(px,py,p.r,0,Math.PI*2);cx.fill();
+      cx.globalAlpha=.28;cx.strokeStyle=`hsl(${p.h+40},80%,70%)`;cx.lineWidth=1.5;cx.beginPath();cx.arc(px,py,p.r+2,0,Math.PI*2);cx.stroke();
+      if(p.ring){cx.globalAlpha=.33;cx.strokeStyle=`hsl(${p.h},60%,65%)`;cx.lineWidth=2;cx.save();cx.translate(px,py);cx.scale(1,.28);cx.beginPath();cx.arc(0,0,p.r*2.2,0,Math.PI*2);cx.stroke();cx.restore();}
+      cx.restore();
+    });
+    if(shoots.length<3&&Math.random()<.004) shoots.push({x:Math.random()*W,y:Math.random()*(H*.4),vx:4+Math.random()*6,vy:2+Math.random()*3,len:65+Math.random()*80,life:1});
+    shoots=shoots.filter(ss=>{
+      ss.x+=ss.vx;ss.y+=ss.vy;ss.life-=.024;if(ss.life<=0)return false;
+      const mag=Math.hypot(ss.vx,ss.vy);cx.save();cx.globalAlpha=ss.life*.85;
+      const sg=cx.createLinearGradient(ss.x,ss.y,ss.x-ss.vx*ss.len/mag,ss.y-ss.vy*ss.len/mag);
+      sg.addColorStop(0,'#ffffff');sg.addColorStop(1,'transparent');
+      cx.strokeStyle=sg;cx.lineWidth=1.5;cx.beginPath();cx.moveTo(ss.x,ss.y);cx.lineTo(ss.x-ss.vx*ss.len/mag,ss.y-ss.vy*ss.len/mag);cx.stroke();cx.restore();
+      return true;
+    });
+  }
+  return{init};
+})();
+
+// C. PREVIEW CANVAS
+const Preview=(()=>{
+  let cv,cx,W,H,hov=null;const pos={};
+  function init(){cv=document.getElementById('preview-canvas');cx=cv.getContext('2d');resize();cv.addEventListener('mousemove',onHov);window.addEventListener('resize',()=>{resize();draw();});}
+  function resize(){const w=cv.parentElement;W=cv.width=w.clientWidth||600;H=cv.height=w.clientHeight||400;}
+  function layout(){
+    const n=S.nodes.length;if(!n)return;const cx2=W/2,cy2=H/2,r=Math.min(W,H)*.34;
+    S.nodes.forEach((nd,i)=>{const a=(i/n)*Math.PI*2-Math.PI/2,jt=Math.sin(i*7.3+2)*18;pos[nd.id]={x:cx2+Math.cos(a)*(r+jt),y:cy2+Math.sin(a)*(r+jt*.5),col:pc(i),i};});
+  }
+  function draw(){
+    if(!cx)return;cx.clearRect(0,0,W,H);
+    if(!S.nodes.length){document.getElementById('preview-msg').style.display='flex';return;}
+    document.getElementById('preview-msg').style.display='none';layout();
+    S.edges.forEach(e=>{
+      const a=pos[e.from_node],b=pos[e.to_node];if(!a||!b)return;
+      const mx=(a.x+b.x)/2+(b.y-a.y)*.15,my=(a.y+b.y)/2-(b.x-a.x)*.15;
+      cx.save();cx.globalAlpha=.35;cx.strokeStyle='rgba(0,200,255,0.55)';cx.lineWidth=1.2;cx.setLineDash([4,6]);
+      cx.beginPath();cx.moveTo(a.x,a.y);cx.quadraticCurveTo(mx,my,b.x,b.y);cx.stroke();
+      const dx=b.x-mx,dy=b.y-my,ang=Math.atan2(dy,dx);
+      cx.globalAlpha=.5;cx.setLineDash([]);cx.fillStyle='rgba(0,200,255,0.6)';
+      cx.beginPath();cx.moveTo(b.x,b.y);cx.lineTo(b.x-8*Math.cos(ang-.4),b.y-8*Math.sin(ang-.4));cx.lineTo(b.x-8*Math.cos(ang+.4),b.y-8*Math.sin(ang+.4));cx.closePath();cx.fill();cx.restore();
+    });
+    S.nodes.forEach(nd=>{
+      const p=pos[nd.id];if(!p)return;
+      const isH=hov===nd.id,isS=document.getElementById('src-sel').value===nd.id;
+      const r=isH?13:isS?12:9;
+      cx.save();cx.globalAlpha=isH?.45:.2;cx.fillStyle=p.col;cx.beginPath();cx.arc(p.x,p.y,r*2.5,0,Math.PI*2);cx.fill();
+      cx.globalAlpha=1;cx.fillStyle=p.col;cx.shadowColor=p.col;cx.shadowBlur=isH?22:10;cx.beginPath();cx.arc(p.x,p.y,r,0,Math.PI*2);cx.fill();
+      if(isS){cx.strokeStyle='#fff';cx.lineWidth=2;cx.shadowBlur=0;cx.beginPath();cx.arc(p.x,p.y,r+4,0,Math.PI*2);cx.stroke();}
+      cx.restore();
+      cx.save();cx.font=`${isH?'500 ':''}12px 'Rajdhani',sans-serif`;cx.fillStyle=isH?'#fff':'rgba(221,238,255,.7)';cx.textAlign='center';cx.fillText(nd.label,p.x,p.y+r+13);cx.restore();
+    });
+  }
+  function onHov(e){const rc=cv.getBoundingClientRect(),mx=e.clientX-rc.left,my=e.clientY-rc.top;hov=null;for(const nd of S.nodes){const p=pos[nd.id];if(p&&Math.hypot(mx-p.x,my-p.y)<15){hov=nd.id;break;}}cv.style.cursor=hov?'pointer':'default';draw();}
+  return{init,draw};
+})();
+
+// D. THREE.JS UNIVERSE
+const U3D=(()=>{
+  let scene,camera,renderer;let rc,mouse;
+  const NM={},EL=[],TL=[],BL=[],LS=[];
+  let phi=Math.PI/2.5,theta=0,radius=30;
+  let isDrag=false,pmx=0,pmy=0;
+  let autoRot=true,showLbls=true,t3=0;
+
+  function init(){
+    const cv=document.getElementById('three-canvas');if(!cv)return;
+    scene=new THREE.Scene();scene.fog=new THREE.FogExp2(0x00000a,.007);
+    camera=new THREE.PerspectiveCamera(55,cv.clientWidth/cv.clientHeight,.1,800);
+    updCam();
+    renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:false});
+    renderer.setSize(cv.clientWidth,cv.clientHeight);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+    renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
+    rc=new THREE.Raycaster();mouse=new THREE.Vector2();
+    scene.add(new THREE.AmbientLight(0x0a1628,3));
+    const pl=new THREE.PointLight(0x00c8ff,4,100);pl.position.set(0,0,25);scene.add(pl);
+    const pl2=new THREE.PointLight(0xb44dff,2,80);pl2.position.set(-20,10,-10);scene.add(pl2);
+    _particles();_nebula();
+    cv.addEventListener('mousedown',e=>{isDrag=true;pmx=e.clientX;pmy=e.clientY;});
+    window.addEventListener('mouseup',()=>isDrag=false);
+    cv.addEventListener('mousemove',onMM);cv.addEventListener('click',onMC);
+    cv.addEventListener('wheel',e=>{radius=Math.max(8,Math.min(70,radius+e.deltaY*.04));});
+    window.addEventListener('resize',()=>{if(!renderer)return;renderer.setSize(cv.clientWidth,cv.clientHeight);camera.aspect=cv.clientWidth/cv.clientHeight;camera.updateProjectionMatrix();});
+    anim();
+  }
+  function _particles(){
+    const n=4000,geo=new THREE.BufferGeometry(),p=new Float32Array(n*3),c=new Float32Array(n*3);
+    for(let i=0;i<n;i++){p[i*3]=(Math.random()-.5)*600;p[i*3+1]=(Math.random()-.5)*600;p[i*3+2]=(Math.random()-.5)*600;const t=Math.random();if(t<.55){c[i*3]=.55;c[i*3+1]=.75;c[i*3+2]=1;}else if(t<.8){c[i*3]=1;c[i*3+1]=.9;c[i*3+2]=.5;}else{c[i*3]=.7;c[i*3+1]=.4;c[i*3+2]=1;}}
+    geo.setAttribute('position',new THREE.BufferAttribute(p,3));geo.setAttribute('color',new THREE.BufferAttribute(c,3));
+    scene.add(new THREE.Points(geo,new THREE.PointsMaterial({size:.15,vertexColors:true,transparent:true,opacity:.75,sizeAttenuation:true})));
+  }
+  function _nebula(){
+    [[0x0a1628,.06],[0x1a0a3a,.05],[0x0a2a1a,.04]].forEach(([cl,op])=>{
+      const m=new THREE.Mesh(new THREE.PlaneGeometry(200,140),new THREE.MeshBasicMaterial({color:cl,transparent:true,opacity:op,side:THREE.DoubleSide}));
+      m.position.set((Math.random()-.5)*50,(Math.random()-.5)*30,-60-Math.random()*40);m.rotation.z=Math.random()*Math.PI;scene.add(m);
+    });
+  }
+  function updCam(){camera.position.set(radius*Math.sin(phi)*Math.sin(theta),radius*Math.cos(phi),radius*Math.sin(phi)*Math.cos(theta));camera.lookAt(0,0,0);}
+  function npos(nd,i,tot){
+    const g=Math.PI*(3-Math.sqrt(5)),y=1-(i/Math.max(tot-1,1))*2,r2=Math.sqrt(1-y*y),a=g*i,sp=10+(nd.avg_salary/18000);
+    return new THREE.Vector3(Math.cos(a)*r2*sp,y*sp,Math.sin(a)*r2*sp);
+  }
+  function addNode(nd,i){
+    const tot=S.nodes.length,p=npos(nd,i,tot),cl=PAL[i%PAL.length],sz=.27+(nd.avg_salary/200000)*.5;
+    const m=new THREE.Mesh(new THREE.SphereGeometry(sz,20,20),new THREE.MeshStandardMaterial({color:cl,emissive:cl,emissiveIntensity:.55,metalness:.1,roughness:.15}));
+    m.position.copy(p);m.userData={nodeId:nd.id,baseScale:1,phase:i*.8,color:cl};scene.add(m);NM[nd.id]=m;
+    const gw=new THREE.Mesh(new THREE.SphereGeometry(sz*3,16,16),new THREE.MeshBasicMaterial({color:cl,transparent:true,opacity:.11,side:THREE.BackSide}));
+    m.add(gw);m.userData.glow=gw;
+    const sm=new THREE.LineBasicMaterial({color:cl,transparent:true,opacity:.5});
+    [[1,0,0],[0,1,0],[0,0,1]].forEach(ax=>{m.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-ax[0]*sz*4,-ax[1]*sz*4,-ax[2]*sz*4),new THREE.Vector3(ax[0]*sz*4,ax[1]*sz*4,ax[2]*sz*4)]),sm));});
+    if(showLbls)addLabel(nd,m,cl);
+  }
+  function addLabel(nd,mesh,cl){
+    const cv2=document.createElement('canvas');cv2.width=256;cv2.height=60;
+    const c=cv2.getContext('2d');c.clearRect(0,0,256,60);c.font='bold 20px Rajdhani,sans-serif';
+    c.fillStyle='rgba(0,0,0,.5)';c.fillRect(0,18,256,28);
+    c.fillStyle='#'+cl.toString(16).padStart(6,'0');c.textAlign='center';c.fillText(nd.label,128,38);
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv2),transparent:true}));
+    const s=mesh.geometry.parameters.radius;sp.scale.set(3.8,.95,1);sp.position.set(0,s+.75,0);
+    mesh.add(sp);mesh.userData.lbl=sp;LS.push(sp);
+  }
+  function rebuildAll(){
+    Object.keys(NM).forEach(id=>{scene.remove(NM[id]);delete NM[id];});EL.forEach(l=>scene.remove(l));EL.length=0;LS.length=0;
+    S.nodes.forEach((n,i)=>addNode(n,i));buildEdges();
+  }
+  function buildEdges(){
+    EL.forEach(l=>scene.remove(l));EL.length=0;
+    S.edges.forEach(e=>{
+      const a=NM[e.from_node],b=NM[e.to_node];if(!a||!b)return;
+      const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(curv(a.position,b.position,14)),new THREE.LineBasicMaterial({color:0x0a2040,transparent:true,opacity:.22+(.6-e.risk)*.3}));
+      scene.add(l);EL.push(l);
+    });
+  }
+  function curv(a,b,n){const m=new THREE.Vector3().addVectors(a,b).multiplyScalar(.5);m.x+=(Math.random()-.5)*3;m.y+=(Math.random()-.5)*3;return new THREE.QuadraticBezierCurve3(a,m,b).getPoints(n);}
+  function clearTL(){TL.forEach(l=>scene.remove(l));TL.length=0;Object.values(NM).forEach(m=>{m.userData.selected=false;m.userData.baseScale=1;m.material.emissiveIntensity=.55;});}
+  function clearBL(){BL.forEach(l=>scene.remove(l));BL.length=0;}
+  function hlTraj(nodes,cl=0xffd700){
+    clearTL();
+    for(let i=0;i<nodes.length-1;i++){const a=NM[nodes[i]],b=NM[nodes[i+1]];if(!a||!b)continue;const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(curv(a.position,b.position,22)),new THREE.LineBasicMaterial({color:cl,transparent:true,opacity:.95}));scene.add(l);TL.push(l);}
+    nodes.forEach(id=>{const m=NM[id];if(m){m.userData.selected=true;m.userData.baseScale=1.5;m.material.emissiveIntensity=1.2;}});
+  }
+  function animBeam(beam,completed){
+    clearBL();
+    beam.forEach(path=>{for(let i=0;i<path.length-1;i++){const a=NM[path[i]],b=NM[path[i+1]];if(!a||!b)continue;const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(curv(a.position,b.position,9)),new THREE.LineBasicMaterial({color:0xb44dff,transparent:true,opacity:.78}));scene.add(l);BL.push(l);}});
+    completed.slice(-3).forEach(path=>path.forEach(id=>{const m=NM[id];if(m){const b=m.userData.baseScale||1;m.userData.baseScale=1.8;setTimeout(()=>m.userData.baseScale=b,320);}}));
+  }
+  function anim(){requestAnimationFrame(anim);t3+=.005;if(autoRot)theta+=.0025;updCam();Object.values(NM).forEach(m=>{const bs=m.userData.baseScale||1,pl=1+Math.sin(t3*2+m.userData.phase)*.07;m.scale.setScalar(bs*pl);if(m.userData.glow)m.userData.glow.material.opacity=.09+Math.sin(t3*2+m.userData.phase)*.04;});renderer&&renderer.render(scene,camera);}
+  function onMM(e){
+    if(isDrag){const dx=(e.clientX-pmx)*.005,dy=(e.clientY-pmy)*.005;theta-=dx;phi=Math.max(.2,Math.min(Math.PI-.2,phi+dy));pmx=e.clientX;pmy=e.clientY;}
+    const cv2=renderer.domElement,r=cv2.getBoundingClientRect();
+    mouse.x=((e.clientX-r.left)/r.width)*2-1;mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+    rc.setFromCamera(mouse,camera);
+    const ms=Object.values(NM),hits=rc.intersectObjects(ms);
+    ms.forEach(m=>{if(!m.userData.selected)m.material.emissiveIntensity=.55;});
+    document.getElementById('node-popup').classList.remove('show');cv2.style.cursor='default';
+    if(hits.length){hits[0].object.material.emissiveIntensity=1.3;cv2.style.cursor='pointer';const nd=S.nodes.find(n=>n.id===hits[0].object.userData.nodeId);if(nd)showPopup(nd,e.clientX,e.clientY);}
+  }
+  function onMC(e){
+    const cv2=renderer.domElement,r=cv2.getBoundingClientRect();
+    mouse.x=((e.clientX-r.left)/r.width)*2-1;mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+    rc.setFromCamera(mouse,camera);const hits=rc.intersectObjects(Object.values(NM));
+    if(hits.length){const nd=S.nodes.find(n=>n.id===hits[0].object.userData.nodeId);if(nd)toast(`${nd.label} · $${nd.avg_salary.toLocaleString()}/yr · ${(nd.satisfaction*100).toFixed(0)}% satisfaction`,'info');}
+  }
+  return{
+    init,rebuildAll,buildEdges,clearTL,clearBL,hlTraj,animBeam,
+    setRot:v=>autoRot=v,
+    setLbls:v=>{showLbls=v;Object.values(NM).forEach(m=>{if(m.userData.lbl)m.userData.lbl.visible=v;});},
+    resetCam:()=>{phi=Math.PI/2.5;theta=0;radius=30;},
+    zoom:d=>radius=Math.max(8,Math.min(70,radius+d)),
+    get autoRot(){return autoRot;},
+  };
+})();
+
+function showPopup(nd,x,y){
+  document.getElementById('np-title').textContent=nd.label.toUpperCase();
+  document.getElementById('np-body').innerHTML=`<div class="np-row"><span class="np-k">Salary</span><span class="np-v">$${nd.avg_salary.toLocaleString()}/yr</span></div><div class="np-row"><span class="np-k">Demand</span><span class="np-v">${(nd.demand*100).toFixed(0)}%</span></div><div class="np-row"><span class="np-k">Satisfaction</span><span class="np-v">${(nd.satisfaction*100).toFixed(0)}%</span></div><div class="np-row"><span class="np-k">Experience</span><span class="np-v">${nd.years_experience} yrs</span></div><div class="np-row"><span class="np-k">Skills</span><span class="np-v">${(nd.skills||[]).slice(0,3).join(', ')}</span></div>`;
+  const p=document.getElementById('node-popup');p.style.left=Math.min(x+14,window.innerWidth-245)+'px';p.style.top=Math.min(y+14,window.innerHeight-175)+'px';p.classList.add('show');
+}
+
+// E. API
+const API={
+  async loadDefault(){try{const r=await fetch(`${S.API}/api/graph`);if(!r.ok)throw 0;return r.json();}catch{return null;}},
+  async analyze(trajs,crit,prof){const r=await fetch(`${S.API}/api/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trajectories:trajs,criterion:crit,user_profile:prof})});return r.json();},
+  exploreWS(req,onStep,onResult,onDone,onErr){
+    try{
+      const ws=new WebSocket(S.API.replace('http','ws')+'/ws/explore');
+      ws.onopen=()=>ws.send(JSON.stringify({type:'start',data:req}));
+      ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='step')onStep(m);if(m.type==='result')onResult(m);if(m.type==='done')onDone();if(m.type==='error')onErr(m.msg);};
+      ws.onerror=()=>onErr('WS failed');
+    }catch(e){onErr(e.message);}
+  },
+};
+
+// F. DEMO ENGINE
+function runDemo(req,onStep,onResult,onDone){
+  toast('Running in demo mode (backend offline)','info');
+  const adj={};S.edges.forEach(e=>{if(!adj[e.from_node])adj[e.from_node]=[];adj[e.from_node].push(e.to_node);});
+  let beam=[[req.source]],completed=[],depth=0;
+  const maxD=Math.min(req.max_depth||5,6),bw=req.beam_width||8;
+  function step(){
+    if(depth>=maxD||!beam.length){
+      const sc=completed.slice(0,20).map((path,i)=>{
+        const n0=S.nodes.find(n=>n.id===path[0]),nF=S.nodes.find(n=>n.id===path[path.length-1]);
+        const sg=nF&&n0?(nF.avg_salary-n0.avg_salary)/Math.max(n0.avg_salary,1):Math.random()*3;
+        return{nodes:path,pareto_rank:i<3?0:i<7?1:2,crowding_distance:Math.random()*5,scores:{salary_growth:+sg.toFixed(3),avg_demand:+(.6+Math.random()*.35).toFixed(3),avg_satisfaction:+(.6+Math.random()*.28).toFixed(3),final_salary:nF?nF.avg_salary:50000+Math.random()*120000,total_years:path.length*2,avg_risk:+(.1+Math.random()*.5).toFixed(3),avg_difficulty:+(.2+Math.random()*.55).toFixed(3)}};
+      }).sort((a,b)=>b.scores.salary_growth-a.scores.salary_growth);
+      onResult({trajectories:sc});onDone();return;
+    }
+    const nb=[];
+    beam.forEach(path=>{const cur=path[path.length-1];(adj[cur]||[]).forEach(next=>{if(!path.includes(next)){const np=[...path,next];if(np.length>=2)completed.push(np);nb.push(np);}});});
+    beam=nb.slice(0,bw);depth++;
+    onStep({depth,beam,completed:completed.slice(-15)});
+    setTimeout(step,520);
+  }
+  setTimeout(step,200);
+}
+
+// G. UI HELPERS
+function toast(msg,type='info'){
+  const c=document.getElementById('toasts'),el=document.createElement('div');
+  el.className=`toast t-${type==='ok'?'ok':type==='error'||type==='err'?'err':'info'}`;
+  el.textContent=msg;c.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .4s';setTimeout(()=>el.remove(),400);},3000);
+}
+function updateStats(){document.getElementById('hs-n').textContent=S.nodes.length;document.getElementById('hs-e').textContent=S.edges.length;document.getElementById('hs-f').textContent=S.trajectories.length;document.getElementById('hs-o').textContent=S.trajectories.filter(t=>t.pareto_rank===0).length;}
+function renderNodeList(){
+  const el=document.getElementById('node-list'),sel=document.getElementById('src-sel'),cur=sel.value;
+  el.innerHTML='';sel.innerHTML='<option value="">— select —</option>';
+  const ef=document.getElementById('ee-from'),et=document.getElementById('ee-to');
+  if(ef){ef.innerHTML='';et.innerHTML='';}
+  S.nodes.forEach((nd,i)=>{
+    const col=pc(i);const div=document.createElement('div');div.className='node-item'+(S.selectedNode===nd.id?' sel-node':'');
+    div.innerHTML=`<div class="n-star" style="background:${col};color:${col}"></div><div style="flex:1;min-width:0"><div class="n-name">${nd.label}</div><div class="n-sal">$${nd.avg_salary.toLocaleString()}/yr</div></div><button class="n-rm" onclick="event.stopPropagation();removeNode('${nd.id}')">✕</button>`;
+    div.onclick=()=>{S.selectedNode=nd.id;renderNodeList();};el.appendChild(div);
+    sel.innerHTML+=`<option value="${nd.id}"${nd.id===cur?' selected':''}>${nd.label}</option>`;
+    if(ef){ef.innerHTML+=`<option value="${nd.id}">${nd.label}</option>`;et.innerHTML+=`<option value="${nd.id}">${nd.label}</option>`;}
+  });
+}
+function renderEdgeList(){
+  const el=document.getElementById('edge-list');el.innerHTML='';
+  if(!S.edges.length){el.innerHTML='<div class="empty-msg">No wormholes yet</div>';return;}
+  S.edges.forEach((e,i)=>{
+    const fl=S.nodes.find(n=>n.id===e.from_node)?.label||e.from_node,tl=S.nodes.find(n=>n.id===e.to_node)?.label||e.to_node;
+    const div=document.createElement('div');div.className='edge-item';
+    div.innerHTML=`<span class="e-from">${fl}</span><span class="e-arr">→</span><span class="e-to">${tl}</span><span style="font-size:9px;color:var(--muted);flex-shrink:0">${e.transition_years}yr</span><button class="e-rm" onclick="removeEdge(${i})">✕</button>`;
+    el.appendChild(div);
+  });
+}
+function switchView(name){
+  S.currentView=name;
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(`view-${name}`).classList.add('active');
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.getElementById(`tab-${name}`).classList.add('active');
+  if(name==='universe'){setTimeout(()=>{if(!U3D._init){U3D.init();U3D._init=true;}U3D.rebuildAll();},60);}
+}
+function openModal(id){if(id==='modal-edge')renderNodeList();document.getElementById(id).classList.add('show');}
+function closeModal(id){document.getElementById(id).classList.remove('show');}
+function bindRange(id,vid,dec=0){
+  const el=document.getElementById(id),vEl=document.getElementById(vid);if(!el||!vEl)return;
+  const fmt=v=>dec?parseFloat(v).toFixed(dec):v;vEl.textContent=fmt(el.value);el.addEventListener('input',()=>vEl.textContent=fmt(el.value));
+}
+
+// H. APP LOGIC
+function confirmAddNode(){
+  const id=document.getElementById('nn-id').value.trim().replace(/\s+/g,'_');const label=document.getElementById('nn-label').value.trim();
+  const salary=parseFloat(document.getElementById('nn-salary').value)||50000;const demand=parseFloat(document.getElementById('nn-dem').value);
+  const sat=parseFloat(document.getElementById('nn-sat').value);const exp=parseInt(document.getElementById('nn-exp').value)||0;
+  const skills=document.getElementById('nn-skills').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!id||!label){toast('ID and Label required','err');return;}
+  if(S.nodes.find(n=>n.id===id)){toast('ID already exists','err');return;}
+  S.nodes.push({id,label,avg_salary:salary,demand,satisfaction:sat,years_experience:exp,skills,type:'role'});
+  closeModal('modal-node');renderNodeList();renderEdgeList();Preview.draw();updateStats();toast(`${label} added`,'ok');
+}
+function confirmAddEdge(){
+  const from=document.getElementById('ee-from').value,to=document.getElementById('ee-to').value;
+  const years=parseInt(document.getElementById('ee-years').value)||2,diff=parseFloat(document.getElementById('ee-diff').value),risk=parseFloat(document.getElementById('ee-risk').value);
+  if(from===to){toast('Source and destination must differ','err');return;}
+  if(S.edges.find(e=>e.from_node===from&&e.to_node===to)){toast('Edge already exists','err');return;}
+  S.edges.push({from_node:from,to_node:to,transition_years:years,difficulty:diff,risk});
+  closeModal('modal-edge');renderEdgeList();Preview.draw();updateStats();toast('Wormhole created','ok');
+}
+function removeNode(id){S.nodes=S.nodes.filter(n=>n.id!==id);S.edges=S.edges.filter(e=>e.from_node!==id&&e.to_node!==id);renderNodeList();renderEdgeList();Preview.draw();updateStats();}
+function removeEdge(i){S.edges.splice(i,1);renderEdgeList();Preview.draw();updateStats();}
+
+async function loadDefault(){
+  let data=await API.loadDefault();
+  if(!data) data={
+    nodes:[
+      {id:"junior_dev",label:"Junior Dev",avg_salary:25000,demand:.85,satisfaction:.65,years_experience:1,skills:["python","git"],type:"role"},
+      {id:"mid_dev",label:"Mid Developer",avg_salary:45000,demand:.90,satisfaction:.72,years_experience:3,skills:["python","design"],type:"role"},
+      {id:"senior_dev",label:"Senior Dev",avg_salary:75000,demand:.88,satisfaction:.78,years_experience:6,skills:["architecture","cloud"],type:"role"},
+      {id:"tech_lead",label:"Tech Lead",avg_salary:90000,demand:.75,satisfaction:.80,years_experience:8,skills:["leadership"],type:"role"},
+      {id:"data_scientist",label:"Data Scientist",avg_salary:70000,demand:.92,satisfaction:.80,years_experience:3,skills:["ml","python"],type:"role"},
+      {id:"ml_engineer",label:"ML Engineer",avg_salary:85000,demand:.94,satisfaction:.82,years_experience:5,skills:["mlops"],type:"role"},
+      {id:"devops_engineer",label:"DevOps Eng",avg_salary:72000,demand:.91,satisfaction:.74,years_experience:4,skills:["k8s","docker"],type:"role"},
+      {id:"engineering_manager",label:"Eng. Manager",avg_salary:110000,demand:.65,satisfaction:.75,years_experience:10,skills:["hiring"],type:"role"},
+      {id:"cto",label:"CTO",avg_salary:180000,demand:.40,satisfaction:.85,years_experience:15,skills:["strategy"],type:"role"},
+      {id:"freelancer",label:"Freelancer",avg_salary:55000,demand:.70,satisfaction:.83,years_experience:3,skills:["self_mgmt"],type:"role"},
+      {id:"startup_founder",label:"Founder",avg_salary:30000,demand:.50,satisfaction:.88,years_experience:5,skills:["resilience"],type:"role"},
+      {id:"product_manager",label:"Product Mgr",avg_salary:95000,demand:.80,satisfaction:.77,years_experience:5,skills:["analytics"],type:"role"},
+    ],
+    edges:[
+      {from_node:"junior_dev",to_node:"mid_dev",transition_years:2,difficulty:.4,risk:.2},
+      {from_node:"junior_dev",to_node:"data_scientist",transition_years:2,difficulty:.6,risk:.3},
+      {from_node:"junior_dev",to_node:"devops_engineer",transition_years:2,difficulty:.5,risk:.25},
+      {from_node:"junior_dev",to_node:"freelancer",transition_years:1,difficulty:.5,risk:.6},
+      {from_node:"mid_dev",to_node:"senior_dev",transition_years:3,difficulty:.5,risk:.2},
+      {from_node:"mid_dev",to_node:"data_scientist",transition_years:1,difficulty:.55,risk:.3},
+      {from_node:"mid_dev",to_node:"ml_engineer",transition_years:2,difficulty:.65,risk:.3},
+      {from_node:"mid_dev",to_node:"freelancer",transition_years:1,difficulty:.4,risk:.5},
+      {from_node:"senior_dev",to_node:"tech_lead",transition_years:2,difficulty:.6,risk:.25},
+      {from_node:"senior_dev",to_node:"ml_engineer",transition_years:1,difficulty:.6,risk:.25},
+      {from_node:"senior_dev",to_node:"product_manager",transition_years:2,difficulty:.7,risk:.4},
+      {from_node:"senior_dev",to_node:"startup_founder",transition_years:2,difficulty:.8,risk:.7},
+      {from_node:"tech_lead",to_node:"engineering_manager",transition_years:2,difficulty:.55,risk:.2},
+      {from_node:"tech_lead",to_node:"cto",transition_years:5,difficulty:.85,risk:.4},
+      {from_node:"data_scientist",to_node:"ml_engineer",transition_years:2,difficulty:.5,risk:.2},
+      {from_node:"data_scientist",to_node:"product_manager",transition_years:2,difficulty:.6,risk:.3},
+      {from_node:"ml_engineer",to_node:"cto",transition_years:7,difficulty:.85,risk:.4},
+      {from_node:"devops_engineer",to_node:"tech_lead",transition_years:3,difficulty:.65,risk:.3},
+      {from_node:"engineering_manager",to_node:"cto",transition_years:4,difficulty:.8,risk:.35},
+      {from_node:"product_manager",to_node:"cto",transition_years:6,difficulty:.8,risk:.4},
+      {from_node:"product_manager",to_node:"startup_founder",transition_years:3,difficulty:.7,risk:.6},
+      {from_node:"freelancer",to_node:"startup_founder",transition_years:2,difficulty:.65,risk:.65},
+    ],
+  };
+  S.nodes=data.nodes;S.edges=data.edges.map(e=>({from_node:e.from||e.from_node,to_node:e.to||e.to_node,...e}));
+  renderNodeList();renderEdgeList();Preview.draw();updateStats();
+  document.getElementById('src-sel').value='junior_dev';toast('Default career graph loaded','ok');
+}
+
+function launchExploration(){
+  const src=document.getElementById('src-sel').value;
+  if(!src){toast('Select a starting role first','err');return;}
+  if(S.nodes.length<2){toast('Add at least 2 nodes','err');return;}
+  S.exploring=true;document.getElementById('launch-btn').disabled=true;
+  toast('Launching exploration...','info');switchView('universe');
+  setTimeout(()=>{if(!U3D._init){U3D.init();U3D._init=true;}U3D.rebuildAll();setTimeout(startSearch,200);},100);
+}
+
+function startSearch(){
+  const src=document.getElementById('src-sel').value,maxD=parseInt(document.getElementById('md').value);
+  const ovl=document.getElementById('srch-overlay'),fill=document.getElementById('so-fill');
+  const sub=document.getElementById('so-sub'),stat=document.getElementById('so-stat'),dots=document.getElementById('so-dots');
+  ovl.classList.add('show');dots.innerHTML=Array.from({length:maxD},(_,i)=>`<div class="so-d" id="sod-${i}"></div>`).join('');
+  fill.style.width='0%';S.trajectories=[];
+  const req={source:src,nodes:S.nodes,edges:S.edges,profile:document.getElementById('prof-sel').value,max_years:parseInt(document.getElementById('my').value),max_risk:parseFloat(document.getElementById('mr').value),beam_width:parseInt(document.getElementById('bw').value),max_depth:maxD,top_k:parseInt(document.getElementById('tk').value),user_profile:document.getElementById('user-profile').value};
+  function onStep(msg){
+    fill.style.width=Math.min(98,(msg.depth/maxD)*100)+'%';sub.textContent=`Beam Search · Depth ${msg.depth} of ${maxD}`;stat.textContent=`${msg.beam.length} active beams · ${msg.completed.length} paths discovered`;
+    const dd=document.getElementById(`sod-${msg.depth-1}`);if(dd)dd.classList.add('on');
+    document.getElementById('sb-st').textContent='Exploring';document.getElementById('sb-d').textContent=msg.depth;document.getElementById('sb-b').textContent=msg.beam.length;document.getElementById('sb-p').textContent=msg.completed.length;
+    U3D.animBeam(msg.beam,msg.completed);
+  }
+  function onResult(msg){S.trajectories=msg.trajectories||[];fill.style.width='100%';sub.textContent='Processing results...';updateStats();renderAnalysis();document.getElementById('tab-analysis').classList.add('has-data');}
+  function onDone(){
+    S.exploring=false;document.getElementById('launch-btn').disabled=false;ovl.classList.remove('show');
+    document.getElementById('sb-st').textContent='Complete';document.getElementById('sb-p').textContent=S.trajectories.length;
+    U3D.clearBL();toast(`${S.trajectories.length} futures discovered!`,'ok');
+    const top=S.trajectories.slice(0,Math.min(3,S.trajectories.length)),cols=[0xffd700,0xb44dff,0x00c8ff];let i=0;
+    const cy=setInterval(()=>{if(i>=top.length){clearInterval(cy);if(S.trajectories.length){U3D.hlTraj(S.trajectories[0].nodes,0xffd700);toast('Best trajectory highlighted in gold','ok');}return;}U3D.hlTraj(top[i].nodes,cols[i%3]);i++;},1100);
+  }
+  function onErr(msg){console.warn('WS err, demo fallback:',msg);runDemo(req,onStep,onResult,onDone);}
+  try{API.exploreWS(req,onStep,onResult,onDone,onErr);}catch(e){runDemo(req,onStep,onResult,onDone);}
+}
+
+function renderAnalysis(){
+  const trajs=S.trajectories;document.getElementById('traj-count').textContent=`(${trajs.length} total · ${trajs.filter(t=>t.pareto_rank===0).length} optimal)`;
+  if(trajs.length){
+    const best=trajs[0];document.getElementById('best-sec').style.display='block';
+    document.getElementById('bt-path').innerHTML=best.nodes.map((n,i)=>`${i>0?'<span class="bt-arrow">→</span>':''}<span class="bt-node">${S.nodes.find(nd=>nd.id===n)?.label||n}</span>`).join('');
+    const s=best.scores;
+    document.getElementById('bt-mets').innerHTML=`<div class="bt-m"><div class="bt-mv">+${((s.salary_growth||0)*100).toFixed(0)}%</div><div class="bt-mk">Salary Growth</div></div><div class="bt-m"><div class="bt-mv">$${(s.final_salary||0).toLocaleString('en',{maximumFractionDigits:0})}</div><div class="bt-mk">Final Salary</div></div><div class="bt-m"><div class="bt-mv">${(s.total_years||0).toFixed(0)} yr</div><div class="bt-mk">Duration</div></div><div class="bt-m"><div class="bt-mv">${((s.avg_satisfaction||0)*100).toFixed(0)}%</div><div class="bt-mk">Satisfaction</div></div>`;
+    renderSteps(best);
+  }
+  const grid=document.getElementById('traj-grid'),cols=[0xffd700,0xb44dff,0x00c8ff,0xff6b35,0x00ff8c,0xff3355];
+  grid.innerHTML='';
+  trajs.forEach((t,i)=>{
+    const s=t.scores,rnk=Math.min(t.pareto_rank,2),col=pc(i);
+    const card=document.createElement('div');card.className=`tcard${i===0?' best-card':''}`;card.style.setProperty('--cc',col);
+    const rl=t.pareto_rank===0?'OPTIMAL':`RANK ${t.pareto_rank}`;
+    const pathStr=t.nodes.map(n=>S.nodes.find(nd=>nd.id===n)?.label||n).join(' → ');
+    card.innerHTML=`<div class="tc-badge r${rnk}">${rl}</div><div class="tc-path">${pathStr}</div><div class="tc-mets"><div class="tc-m"><span class="tc-mv" style="color:var(--green)">+${((s.salary_growth||0)*100).toFixed(0)}%</span><span class="tc-mk">growth</span></div><div class="tc-m"><span class="tc-mv" style="color:var(--gold)">$${Math.round((s.final_salary||0)/1000)}k</span><span class="tc-mk">final sal</span></div><div class="tc-m"><span class="tc-mv">${(s.total_years||0).toFixed(0)}yr</span><span class="tc-mk">duration</span></div><div class="tc-m"><span class="tc-mv" style="color:${(s.avg_risk||0)>.5?'var(--red)':'var(--green)'}">${((s.avg_risk||0)*100).toFixed(0)}%</span><span class="tc-mk">risk</span></div><div class="tc-m"><span class="tc-mv" style="color:var(--quasar)">${((s.avg_satisfaction||0)*100).toFixed(0)}%</span><span class="tc-mk">satisf.</span></div><div class="tc-m"><span class="tc-mv">${((s.avg_demand||0)*100).toFixed(0)}%</span><span class="tc-mk">demand</span></div></div>`;
+    card.onclick=()=>{switchView('universe');setTimeout(()=>U3D.hlTraj(t.nodes,cols[i%cols.length]),100);toast(`Highlighted: ${t.nodes.slice(0,3).join(' → ')}...`,'info');};
+    grid.appendChild(card);
+  });
+}
+function renderSteps(traj){
+  const sec=document.getElementById('step-sec'),grid=document.getElementById('step-grid');sec.style.display='block';grid.innerHTML='';
+  for(let i=0;i<traj.nodes.length-1;i++){
+    const fr=traj.nodes[i],to=traj.nodes[i+1];const frN=S.nodes.find(n=>n.id===fr),toN=S.nodes.find(n=>n.id===to);const edge=S.edges.find(e=>e.from_node===fr&&e.to_node===to);
+    const card=document.createElement('div');card.className='step-card';
+    card.innerHTML=`<div class="step-num">Decision ${i+1} of ${traj.nodes.length-1}</div><div class="step-nodes"><span class="step-n src-n">${frN?.label||fr}</span><span style="color:var(--muted);font-size:16px">→</span><span class="step-n dst-n">${toN?.label||to}</span></div><div class="step-desc">${edge?`~${edge.transition_years} year${edge.transition_years!==1?'s':''} · Difficulty ${(edge.difficulty*100).toFixed(0)}% · Risk ${(edge.risk*100).toFixed(0)}%.`:''} ${toN?`Salary becomes $${toN.avg_salary.toLocaleString()}/yr · ${(toN.satisfaction*100).toFixed(0)}% satisfaction.`:''}</div>`;
+    grid.appendChild(card);
+  }
+}
+async function requestAnalysis(){
+  if(!S.trajectories.length){toast('Run exploration first','err');return;}
+  const crit=document.getElementById('crit-disp').value||document.getElementById('criterion').value;const prof=document.getElementById('user-profile').value;
+  const el=document.getElementById('llm-body'),btn=document.getElementById('analyze-btn');
+  el.textContent='';el.classList.add('llm-typing');btn.disabled=true;toast('Consulting Gemini...','info');
+  try{const res=await API.analyze(S.trajectories.slice(0,5),crit,prof);el.classList.remove('llm-typing');el.textContent=res.analysis||'Analysis unavailable.';toast('Gemini analysis ready','ok');}
+  catch(e){el.classList.remove('llm-typing');el.textContent='[Backend offline]\n\nTo enable Gemini analysis, run:\n  python main_api.py\n\nThen click Analyze again.';toast('Backend offline — demo mode','info');}
+  finally{btn.disabled=false;}
+}
+function toggleRot(){S.autoRot=!S.autoRot;U3D.setRot(S.autoRot);document.getElementById('cb-rot').classList.toggle('on',S.autoRot);}
+function resetCam(){U3D.resetCam();}
+function toggleAllTraj(){S.showAllTraj=!S.showAllTraj;document.getElementById('cb-traj').classList.toggle('on',S.showAllTraj);if(S.showAllTraj&&S.trajectories.length){const cl=[0xffd700,0xb44dff,0x00c8ff,0xff6b35,0x00ff8c];S.trajectories.slice(0,5).forEach((t,i)=>setTimeout(()=>U3D.hlTraj(t.nodes,cl[i]),i*280));}else U3D.clearTL();}
+function toggleLbls(){S.showLbls=!S.showLbls;U3D.setLbls(S.showLbls);document.getElementById('cb-lbl').classList.toggle('on',S.showLbls);}
+function doZoom(d){U3D.zoom(d);}
+function syncCrit(src){const other=src==='criterion'?'crit-disp':'criterion';document.getElementById(other).value=document.getElementById(src).value;}
+
+// I. INIT
+window.addEventListener('DOMContentLoaded',()=>{
+  SpaceBG.init();Preview.init();
+  bindRange('bw','bw-v');bindRange('md','md-v');bindRange('tk','tk-v');bindRange('my','my-v');bindRange('mr','mr-v',2);
+  bindRange('nn-dem','nn-dem-v',2);bindRange('nn-sat','nn-sat-v',2);bindRange('ee-diff','ee-diff-v',2);bindRange('ee-risk','ee-risk-v',2);
+  document.getElementById('criterion').addEventListener('input',()=>syncCrit('criterion'));
+  document.getElementById('crit-disp').addEventListener('input',()=>syncCrit('crit-disp'));
+  setTimeout(async()=>{const ld=document.getElementById('loading');ld.classList.add('out');setTimeout(()=>ld.style.display='none',800);await loadDefault();},1800);
+});
+</script>
+</body>
+</html>
+</file>
+
+<file path="frontend/js/animation.js">
+
+</file>
+
+<file path="frontend/js/graph3d.js">
+
+</file>
+
+<file path="frontend/js/ui.js">
+
+</file>
+
+<file path="frontend/js/universe.js">
+
+</file>
+
+<file path="frontend/js/websocket.js">
+
+</file>
+
+<file path="requirements.txt">
+# LLM
+google-generativeai>=0.7.0
+
+# Data & algorithms
+networkx>=3.3
+numpy>=1.26
+pymoo>=0.6.1
+
+# Web framework (interfaz visual)
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+websockets>=12.0
+
+# Visualization & CLI
+matplotlib>=3.9
+rich>=13.7
+
+# Config & utilities
+python-dotenv>=1.0
+pydantic>=2.7
+loguru>=0.7
+
+# Testing
+pytest>=8.2
+pytest-cov>=5.0
+</file>
+
+<file path=".gitignore">
+# Environment & secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Data outputs
+experiments/results/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+</file>
+
+<file path="main.py">
+"""
+main.py
+-------
+Punto de entrada de PathForge.
+
+Ofrece una interfaz CLI interactiva para explorar trayectorias
+profesionales, con output visual usando Rich.
+
+Uso:
+    python main.py                        # modo interactivo
+    python main.py --source junior_dev    # inicio directo
+    python main.py --source junior_dev --profile conservative
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.table import Table
+from rich.text import Text
+from rich import print as rprint
+
+from core.constraints import ConstraintProfiles, Constraint
+from core.generator import GeneratorConfig, TrajectoryGenerator
+from core.graph import CareerGraph
+from data.loader import load_career_graph
+from llm.analyzer import TrajectoryAnalyzer
+
+console = Console()
+
+# ---------------------------------------------------------------------------
+# Constantes de presentación
+# ---------------------------------------------------------------------------
+
+BANNER = """
+██████╗  █████╗ ████████╗██╗  ██╗███████╗ ██████╗ ██████╗  ██████╗ ███████╗
+██╔══██╗██╔══██╗╚══██╔══╝██║  ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝
+██████╔╝███████║   ██║   ███████║█████╗  ██║   ██║██████╔╝██║  ███╗█████╗
+██╔═══╝ ██╔══██║   ██║   ██╔══██║██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
+██║     ██║  ██║   ██║   ██║  ██║██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
+╚═╝     ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+"""
+
+PROFILES = {
+    "conservative": ConstraintProfiles.conservative,
+    "ambitious":    ConstraintProfiles.ambitious,
+    "balanced":     ConstraintProfiles.balanced,
+    "fast_track":   ConstraintProfiles.fast_track,
+}
+
+PROFILE_DESCRIPTIONS = {
+    "conservative": "Bajo riesgo, baja dificultad — ideal si quieres estabilidad",
+    "ambitious":    "Salario final alto — para quienes priorizan crecer económicamente",
+    "balanced":     "Equilibrio entre tiempo, riesgo y salario (recomendado)",
+    "fast_track":   "Máximo crecimiento en el menor tiempo posible",
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers de visualización
+# ---------------------------------------------------------------------------
+
+def print_banner() -> None:
+    console.print(Text(BANNER, style="bold cyan"))
+    console.print(
+        Panel(
+            "[bold white]Explorador inteligente de trayectorias profesionales[/bold white]\n"
+            "[dim]Algoritmo: Beam Search + Pareto Optimality + Gemini LLM[/dim]",
+            border_style="cyan",
+        )
+    )
+
+
+def print_trajectories_table(results: list) -> None:
+    """Muestra las trayectorias generadas como tabla Rich."""
+    table = Table(
+        title="🎯 Trayectorias Generadas",
+        show_header=True,
+        header_style="bold magenta",
+        border_style="dim",
+        show_lines=True,
+    )
+
+    table.add_column("#",           style="dim", width=3)
+    table.add_column("Trayectoria", style="cyan", min_width=40)
+    table.add_column("💰 Salario Final", justify="right", style="green")
+    table.add_column("📈 Crecimiento",   justify="right", style="yellow")
+    table.add_column("⏱  Años",          justify="right")
+    table.add_column("⚠️  Riesgo",        justify="right")
+    table.add_column("😊 Satisfacción",  justify="right")
+    table.add_column("🏆 Pareto",        justify="center")
+
+    for i, et in enumerate(results, 1):
+        s = et.scores
+        path_str = " → ".join(et.trajectory.nodes)
+        pareto_badge = "⭐" * max(0, 3 - et.pareto_rank) or "·"
+
+        table.add_row(
+            str(i),
+            path_str,
+            f"${s.get('final_salary', 0):,.0f}",
+            f"{s.get('salary_growth', 0):.1%}",
+            f"{s.get('total_years', 0):.0f}",
+            f"{s.get('avg_risk', 0):.0%}",
+            f"{s.get('avg_satisfaction', 0):.0%}",
+            pareto_badge,
+        )
+
+    console.print(table)
+
+
+def print_profile_menu():
+    """Muestra los perfiles disponibles y devuelve la clave seleccionada (o None)."""
+    console.print(
+        Panel(
+            "\n".join(f"[bold]{k}[/bold] — {PROFILE_DESCRIPTIONS.get(k,'')}" for k in PROFILES),
+            title="Perfiles disponibles",
+            border_style="cyan",
+        )
+    )
+    choices = list(PROFILES.keys()) + ["cancel"]
+    choice = Prompt.ask("Seleccione perfil", choices=choices, default="balanced")
+    if choice == "cancel":
+        console.print("Operación cancelada.", style="dim")
+        return None
+    console.print(f"Perfil seleccionado: [bold]{choice}[/bold]")
+    return choice
+</file>
+
+<file path="README.md">
+
+</file>
+
+<file path="test_quick.py">
+"""test_quick.py — Verificación del core + LLM."""
+
+from data.loader import load_career_graph
+from core.graph import CareerGraph
+from core.constraints import ConstraintProfiles
+from core.generator import TrajectoryGenerator, GeneratorConfig
+from core.evaluator import TrajectoryEvaluator
+from llm.analyzer import TrajectoryAnalyzer
+
+# 1. Generar trayectorias
+G = load_career_graph()
+career_graph = CareerGraph(G)
+config = GeneratorConfig(beam_width=8, max_depth=5, top_k_results=5)
+generator = TrajectoryGenerator(career_graph, config)
+
+results = generator.generate(
+    source="junior_dev",
+    constraints=ConstraintProfiles.balanced(max_years=10),
+)
+
+print(f"Trayectorias generadas: {len(results)}")
+for et in results:
+    print(f"  {et.trajectory} | rank={et.pareto_rank}")
+
+# 2. Análisis con Gemini
+analyzer = TrajectoryAnalyzer(user_profile="desarrollador junior con 1 año de experiencia")
+
+print("\n" + "="*60)
+print("ANÁLISIS COMPARATIVO (Gemini)")
+print("="*60)
+result = analyzer.compare(results)
+print(result.content)
+
+print("\n" + "="*60)
+print("RANKING POR CRITERIO")
+print("="*60)
+ranking = analyzer.rank_by(results, "quiero crecer rápido con el menor riesgo posible")
+print(ranking.content)
+</file>
+
+</files>

@@ -113,4 +113,19 @@ def print_trajectories_table(results: list) -> None:
     console.print(table)
 
 
-def print_profile_menu()
+def print_profile_menu():
+    """Muestra los perfiles disponibles y devuelve la clave seleccionada (o None)."""
+    console.print(
+        Panel(
+            "\n".join(f"[bold]{k}[/bold] — {PROFILE_DESCRIPTIONS.get(k,'')}" for k in PROFILES),
+            title="Perfiles disponibles",
+            border_style="cyan",
+        )
+    )
+    choices = list(PROFILES.keys()) + ["cancel"]
+    choice = Prompt.ask("Seleccione perfil", choices=choices, default="balanced")
+    if choice == "cancel":
+        console.print("Operación cancelada.", style="dim")
+        return None
+    console.print(f"Perfil seleccionado: [bold]{choice}[/bold]")
+    return choice

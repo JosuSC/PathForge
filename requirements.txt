@@ -1,19 +1,24 @@
 # LLM
-google-generativeai>=0.7.0   # Cliente oficial Gemini
+google-generativeai>=0.7.0
 
 # Data & algorithms
-networkx>=3.3                # Grafos (modelar el espacio de trayectorias)
-numpy>=1.26                  # Operaciones numéricas eficientes
-pymoo>=0.6.1                 # Optimización multiobjetivo (NSGA-II)
+networkx>=3.3
+numpy>=1.26
+pymoo>=0.6.1
 
-# Visualization & reporting
-matplotlib>=3.9              # Gráficas para experimentos
-rich>=13.7                   # Output bonito en terminal
+# Web framework (interfaz visual)
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+websockets>=12.0
+
+# Visualization & CLI
+matplotlib>=3.9
+rich>=13.7
 
 # Config & utilities
-python-dotenv>=1.0           # Cargar .env de forma segura
-pydantic>=2.7                # Validación de datos con tipos
-loguru>=0.7                  # Logging profesional
+python-dotenv>=1.0
+pydantic>=2.7
+loguru>=0.7
 
 # Testing
 pytest>=8.2

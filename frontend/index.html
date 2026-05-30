@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>PathForge — Career Universe Explorer</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;500;600&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --void:#00000a;--space:#030b1a;--nebula:#071428;
+  --panel:rgba(3,11,26,0.9);--panel2:rgba(5,15,35,0.96);
+  --border:rgba(0,200,255,0.18);--border2:rgba(0,200,255,0.38);
+  --pulsar:#00c8ff;--nova:#ff6b35;--quasar:#b44dff;
+  --gold:#ffc843;--green:#00ff8c;--red:#ff3355;
+  --text:#ddeeff;--muted:rgba(221,238,255,0.4);
+  --gb:0 0 18px rgba(0,200,255,0.45);
+  --gg:0 0 18px rgba(255,200,67,0.45);
+  --gp:0 0 18px rgba(180,77,255,0.45);
+}
+html,body{width:100%;height:100%;background:var(--void);color:var(--text);font-family:'Rajdhani',sans-serif;overflow:hidden}
+#space-canvas{position:fixed;inset:0;z-index:0}
+#app{position:relative;z-index:10;width:100vw;height:100vh;display:flex;flex-direction:column}
+#topbar{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;flex-shrink:0;background:linear-gradient(180deg,rgba(0,0,15,.97) 0%,transparent 100%);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-orb{width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#80eeff,var(--pulsar),var(--quasar));box-shadow:var(--gb),0 0 40px rgba(0,200,255,.3);animation:orb 3s ease-in-out infinite;flex-shrink:0}
+@keyframes orb{0%,100%{transform:scale(1)}50%{transform:scale(1.1);box-shadow:0 0 30px rgba(0,200,255,.7),0 0 60px rgba(180,77,255,.4)}}
+.brand-name{font-family:'Orbitron',monospace;font-size:19px;font-weight:900;letter-spacing:5px;background:linear-gradient(90deg,var(--pulsar),var(--quasar),var(--gold));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.brand-sub{font-size:10px;color:var(--muted);letter-spacing:2.5px;text-transform:uppercase}
+.nav-tabs{display:flex;gap:3px}
+.nav-tab{padding:7px 18px;border:1px solid transparent;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);background:none;cursor:pointer;transition:all .25s;position:relative}
+.nav-tab.active{color:var(--pulsar);border-color:var(--border2);background:rgba(0,200,255,.07);box-shadow:var(--gb)}
+.nav-tab:hover:not(.active){color:var(--text);border-color:var(--border)}
+.tab-badge{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);display:none}
+.nav-tab.has-data .tab-badge{display:block}
+.hdr-stats{display:flex;gap:20px}
+.hstat{text-align:center}
+.hstat-v{font-family:'Orbitron',monospace;font-size:15px;font-weight:700;color:var(--pulsar)}
+.hstat-l{font-size:9px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase}
+#views{flex:1;overflow:hidden;position:relative}
+.view{position:absolute;inset:0;display:none;overflow:hidden}
+.view.active{display:flex}
+/* SETUP */
+#view-setup{flex-direction:row}
+.setup-left{width:330px;flex-shrink:0;background:var(--panel2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.setup-left::-webkit-scrollbar{width:3px}
+.setup-left::-webkit-scrollbar-thumb{background:var(--border2)}
+.setup-right{flex:1;display:flex;flex-direction:column;background:rgba(0,0,0,.12);overflow:hidden}
+.ph{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px;flex-shrink:0}
+.ph-dot{width:7px;height:7px;border-radius:50%;background:var(--pulsar);box-shadow:0 0 8px var(--pulsar);animation:blink 2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.ph h2{font-family:'Orbitron',monospace;font-size:10px;letter-spacing:2.5px;color:var(--pulsar);text-transform:uppercase}
+.fsec{padding:14px 16px;border-bottom:1px solid var(--border)}
+.fsec:last-child{border-bottom:none}
+.stitle{font-family:'Orbitron',monospace;font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.stitle::after{content:'';flex:1;height:1px;background:var(--border)}
+.lbl{display:block;font-size:10px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:5px}
+.inp{width:100%;background:rgba(0,200,255,.05);border:1px solid var(--border);color:var(--text);padding:8px 11px;font-family:'Rajdhani',sans-serif;font-size:14px;outline:none;transition:border-color .2s}
+.inp:focus{border-color:var(--pulsar);box-shadow:var(--gb)}
+.inp::placeholder{color:var(--muted)}
+.sel{width:100%;background:rgba(0,200,255,.05);border:1px solid var(--border);color:var(--text);padding:8px 11px;font-family:'Rajdhani',sans-serif;font-size:14px;outline:none;cursor:pointer}
+.sel option{background:var(--nebula)}
+.rng{width:100%;accent-color:var(--pulsar);cursor:pointer;margin-top:3px}
+.rng-v{font-family:'Share Tech Mono',monospace;font-size:12px;color:var(--pulsar);min-width:36px;text-align:right}
+.fg{margin-bottom:12px}
+.node-list{display:flex;flex-direction:column;gap:4px;margin-bottom:9px}
+.node-item{display:flex;align-items:center;gap:7px;padding:7px 9px;background:rgba(0,200,255,.04);border:1px solid rgba(0,200,255,.1);cursor:pointer;transition:all .2s;position:relative}
+.node-item:hover{border-color:var(--pulsar);background:rgba(0,200,255,.1)}
+.node-item.sel-node{border-color:var(--gold);background:rgba(255,200,67,.06)}
+.n-star{width:9px;height:9px;border-radius:50%;flex-shrink:0;box-shadow:0 0 5px currentColor}
+.n-name{font-size:13px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.n-sal{font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--green)}
+.n-rm{width:15px;height:15px;background:none;border:1px solid var(--red);color:var(--red);font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s;flex-shrink:0}
+.node-item:hover .n-rm{opacity:1}
+.edge-list{display:flex;flex-direction:column;gap:3px;margin-bottom:9px}
+.edge-item{display:flex;align-items:center;gap:5px;padding:5px 7px;background:rgba(180,77,255,.04);border:1px solid rgba(180,77,255,.12);font-size:11px}
+.e-from,.e-to{opacity:.8;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.e-arr{color:var(--quasar);flex-shrink:0}
+.e-rm{margin-left:auto;background:none;border:none;color:var(--red);cursor:pointer;font-size:11px;opacity:.5;flex-shrink:0}
+.e-rm:hover{opacity:1}
+.btn{padding:8px 13px;font-family:'Orbitron',monospace;font-size:9px;letter-spacing:1.5px;text-transform:uppercase;border:1px solid;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn-c{background:rgba(0,200,255,.08);border-color:var(--pulsar);color:var(--pulsar)}
+.btn-c:hover{background:rgba(0,200,255,.2);box-shadow:var(--gb)}
+.btn-g{background:rgba(255,200,67,.08);border-color:var(--gold);color:var(--gold)}
+.btn-g:hover{background:rgba(255,200,67,.2);box-shadow:var(--gg)}
+.btn-launch{background:linear-gradient(135deg,rgba(0,200,255,.12),rgba(180,77,255,.12));border-color:var(--quasar);color:var(--text);font-size:11px;padding:13px 18px;width:100%}
+.btn-launch:hover{background:linear-gradient(135deg,rgba(0,200,255,.25),rgba(180,77,255,.25));box-shadow:var(--gp);transform:translateY(-1px)}
+.btn-launch:disabled{opacity:.35;cursor:not-allowed;transform:none}
+.btn-sm{padding:5px 9px;font-size:8px}
+.btn-full{width:100%}
+.btn-row{display:flex;gap:7px}
+.mt8{margin-top:8px}
+.divider{height:1px;background:var(--border);margin:10px 0}
+.empty-msg{color:var(--muted);font-size:12px;text-align:center;padding:16px 0}
+.preview-wrap{flex:1;position:relative;min-height:0}
+#preview-canvas{width:100%;height:100%;display:block}
+#preview-msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:8px}
+#preview-msg h3{font-family:'Orbitron',monospace;font-size:16px;letter-spacing:4px;color:var(--muted)}
+#preview-msg p{font-size:12px;color:var(--muted);letter-spacing:1px;text-align:center;padding:0 40px}
+/* UNIVERSE */
+#view-universe{position:relative}
+#three-canvas{position:absolute;inset:0;z-index:0;pointer-events:all}
+.univ-ui{position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;pointer-events:none}
+.univ-toolbar{display:flex;align-items:center;gap:6px;padding:10px 16px;background:linear-gradient(180deg,rgba(0,0,15,.85) 0%,transparent 100%);flex-shrink:0}
+.univ-toolbar>*{pointer-events:all}
+.ctrl-btn{width:34px;height:34px;background:var(--panel);border:1px solid var(--border);color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .2s}
+.ctrl-btn:hover{border-color:var(--pulsar);color:var(--pulsar);box-shadow:var(--gb)}
+.ctrl-btn.on{border-color:var(--pulsar);color:var(--pulsar);background:rgba(0,200,255,.12)}
+.ctrl-sep{width:1px;height:24px;background:var(--border);margin:0 4px}
+.univ-spacer{flex:1;pointer-events:none}
+.univ-statusbar{background:rgba(0,0,15,.9);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 18px;height:40px;gap:28px;flex-shrink:0;pointer-events:all}
+.sb-item{display:flex;align-items:center;gap:7px;font-size:11px}
+.sb-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.sb-lbl{color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-size:9px}
+.sb-val{font-family:'Share Tech Mono',monospace;color:var(--text)}
+.sb-hint{margin-left:auto;font-size:9px;color:var(--muted);letter-spacing:1px}
+#srch-overlay{position:absolute;inset:0;z-index:50;background:rgba(0,0,15,.72);backdrop-filter:blur(5px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;opacity:0;pointer-events:none;transition:opacity .4s}
+#srch-overlay.show{opacity:1;pointer-events:all}
+.so-title{font-family:'Orbitron',monospace;font-size:20px;font-weight:900;letter-spacing:5px;background:linear-gradient(90deg,var(--pulsar),var(--quasar));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.so-sub{font-size:12px;color:var(--muted);letter-spacing:2px}
+.so-bar{width:340px;height:3px;background:rgba(0,200,255,.12);overflow:hidden;border:1px solid var(--border)}
+.so-fill{height:100%;background:linear-gradient(90deg,var(--quasar),var(--pulsar),var(--gold));width:0%;transition:width .4s}
+.so-stat{font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--pulsar)}
+.so-dots{display:flex;gap:8px}
+.so-d{width:9px;height:9px;border-radius:50%;border:1px solid var(--border);background:transparent;transition:all .3s}
+.so-d.on{background:var(--pulsar);box-shadow:0 0 10px var(--pulsar)}
+#node-popup{position:fixed;background:var(--panel2);border:1px solid var(--pulsar);box-shadow:var(--gb);padding:13px 15px;width:230px;z-index:200;pointer-events:none;opacity:0;transition:opacity .2s;backdrop-filter:blur(16px)}
+#node-popup.show{opacity:1}
+#np-title{font-family:'Orbitron',monospace;font-size:10px;color:var(--pulsar);letter-spacing:2px;margin-bottom:9px}
+.np-row{display:flex;justify-content:space-between;margin-bottom:3px;font-size:12px}
+.np-k{color:var(--muted)}.np-v{font-family:'Share Tech Mono',monospace}
+/* ANALYSIS */
+#view-analysis{flex-direction:column;overflow-y:auto}
+#view-analysis::-webkit-scrollbar{width:4px}
+#view-analysis::-webkit-scrollbar-thumb{background:var(--border2)}
+.analysis-wrap{padding:22px;max-width:1180px;margin:0 auto;width:100%}
+.ah{margin-bottom:20px}
+.ah h2{font-family:'Orbitron',monospace;font-size:14px;letter-spacing:4px;color:var(--pulsar);margin-bottom:5px}
+.ah p{font-size:12px;color:var(--muted);letter-spacing:.5px}
+.best-sec{background:var(--panel2);border:1px solid var(--gold);padding:18px;margin-bottom:22px;position:relative;overflow:hidden}
+.best-sec::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(255,200,67,.05) 0%,transparent 70%);pointer-events:none}
+.bt-crown{font-size:22px;margin-bottom:6px}
+.bt-title{font-family:'Orbitron',monospace;font-size:12px;color:var(--gold);letter-spacing:3px;margin-bottom:10px}
+.bt-path{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-bottom:12px}
+.bt-node{padding:3px 10px;border:1px solid var(--gold);color:var(--gold);background:rgba(255,200,67,.08);font-size:11px;font-family:'Rajdhani',sans-serif;font-weight:600}
+.bt-arrow{color:var(--muted);font-size:16px}
+.bt-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.bt-m{text-align:center;padding:9px;background:rgba(0,0,0,.3);border:1px solid rgba(255,200,67,.14)}
+.bt-mv{font-family:'Orbitron',monospace;font-size:15px;font-weight:700;color:var(--gold)}
+.bt-mk{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+.llm-panel{background:var(--panel2);border:1px solid var(--border);padding:18px;margin-bottom:22px}
+.llm-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.llm-title{font-family:'Orbitron',monospace;font-size:10px;color:var(--quasar);letter-spacing:2px}
+.llm-body{font-size:12px;line-height:1.8;color:var(--text);opacity:.9;white-space:pre-wrap;max-height:300px;overflow-y:auto}
+.llm-body::-webkit-scrollbar{width:3px}
+.llm-body::-webkit-scrollbar-thumb{background:var(--border2)}
+.llm-typing::after{content:'▋';animation:cb .7s step-end infinite;color:var(--pulsar)}
+@keyframes cb{0%,100%{opacity:1}50%{opacity:0}}
+.crit-row{display:flex;gap:9px;margin-bottom:12px}
+.crit-row .inp{flex:1}
+.traj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:12px;margin-bottom:24px}
+.tcard{background:var(--panel2);border:1px solid var(--border);padding:13px;cursor:pointer;transition:all .2s;position:relative;overflow:hidden}
+.tcard::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cc,var(--pulsar))}
+.tcard:hover{border-color:var(--cc,var(--pulsar));background:rgba(0,200,255,.04);transform:translateY(-2px)}
+.tcard.best-card{border-color:var(--gold)}
+.tcard.best-card::before{background:var(--gold)}
+.tc-badge{position:absolute;top:9px;right:9px;font-family:'Orbitron',monospace;font-size:7px;padding:2px 6px;border:1px solid;letter-spacing:1px}
+.r0{color:var(--gold);border-color:var(--gold);background:rgba(255,200,67,.08)}
+.r1{color:var(--quasar);border-color:var(--quasar);background:rgba(180,77,255,.08)}
+.r2{color:var(--pulsar);border-color:var(--pulsar);background:rgba(0,200,255,.08)}
+.tc-path{font-family:'Share Tech Mono',monospace;font-size:9px;line-height:1.7;margin-bottom:9px;padding-right:55px;word-break:break-all}
+.tc-mets{display:grid;grid-template-columns:repeat(3,1fr);gap:3px}
+.tc-m{padding:3px 5px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06);text-align:center}
+.tc-mv{font-family:'Share Tech Mono',monospace;font-size:10px;display:block}
+.tc-mk{font-size:8px;color:var(--muted);text-transform:uppercase}
+.step-sec{margin-top:22px}
+.step-sec-title{font-family:'Orbitron',monospace;font-size:10px;color:var(--text);letter-spacing:2px;margin-bottom:12px}
+.step-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px}
+.step-card{background:var(--panel);border:1px solid var(--border);padding:13px}
+.step-num{font-family:'Share Tech Mono',monospace;font-size:10px;color:var(--muted);margin-bottom:5px}
+.step-nodes{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}
+.step-n{padding:3px 9px;font-size:11px;font-weight:600;border:1px solid var(--border2);background:rgba(0,200,255,.06)}
+.step-n.src-n{border-color:var(--green);color:var(--green);background:rgba(0,255,140,.06)}
+.step-n.dst-n{border-color:var(--gold);color:var(--gold);background:rgba(255,200,67,.06)}
+.step-desc{font-size:12px;color:var(--muted);line-height:1.6}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,15,.85);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);opacity:0;pointer-events:none;transition:opacity .3s}
+.modal-bg.show{opacity:1;pointer-events:all}
+.modal{background:var(--panel2);border:1px solid var(--border2);box-shadow:var(--gb);width:390px;max-height:84vh;overflow-y:auto;padding:22px}
+.modal::-webkit-scrollbar{width:3px}
+.modal::-webkit-scrollbar-thumb{background:var(--border2)}
+.modal h2{font-family:'Orbitron',monospace;font-size:12px;color:var(--pulsar);letter-spacing:3px;margin-bottom:18px}
+.modal-acts{display:flex;gap:9px;margin-top:14px}
+#toasts{position:fixed;top:68px;right:18px;z-index:600;display:flex;flex-direction:column;gap:6px}
+.toast{padding:8px 13px;background:var(--panel2);border:1px solid var(--border);font-size:12px;animation:tsl .3s ease;max-width:270px;backdrop-filter:blur(12px)}
+@keyframes tsl{from{transform:translateX(110%);opacity:0}to{transform:none;opacity:1}}
+.t-ok{border-color:var(--green);color:var(--green)}
+.t-err{border-color:var(--red);color:var(--red)}
+.t-info{border-color:var(--pulsar);color:var(--pulsar)}
+#loading{position:fixed;inset:0;background:var(--void);z-index:900;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .8s}
+#loading.out{opacity:0;pointer-events:none}
+.ld-logo{font-family:'Orbitron',monospace;font-size:48px;font-weight:900;letter-spacing:10px;background:linear-gradient(90deg,var(--pulsar),var(--quasar),var(--gold));-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:glt 2s ease-in-out infinite}
+@keyframes glt{0%,100%{filter:brightness(1)}50%{filter:brightness(1.5) drop-shadow(0 0 20px rgba(0,200,255,.6))}}
+.ld-sub{font-size:12px;color:var(--muted);letter-spacing:4px;text-transform:uppercase}
+.ld-bar{width:160px;height:2px;background:rgba(0,200,255,.1);overflow:hidden}
+.ld-fill{height:100%;background:linear-gradient(90deg,var(--quasar),var(--pulsar));animation:ldf 1.5s ease-in-out infinite}
+@keyframes ldf{0%{width:0%;margin-left:0}50%{width:55%;margin-left:20%}100%{width:0%;margin-left:100%}}
+*{scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+</style>
+</head>
+<body>
+<canvas id="space-canvas"></canvas>
+<div id="loading"><div class="ld-logo">PATHFORGE</div><div class="ld-sub">Initializing Universe Engine</div><div class="ld-bar"><div class="ld-fill"></div></div></div>
+<div id="toasts"></div>
+<div id="node-popup"><div id="np-title"></div><div id="np-body"></div></div>
+
+<!-- MODAL: Add Node -->
+<div class="modal-bg" id="modal-node">
+<div class="modal">
+  <h2>⭐ Add Star Node</h2>
+  <div class="fg"><label class="lbl">Node ID</label><input class="inp" id="nn-id" placeholder="senior_dev"/></div>
+  <div class="fg"><label class="lbl">Display Label</label><input class="inp" id="nn-label" placeholder="Senior Developer"/></div>
+  <div class="fg"><label class="lbl">Average Salary (USD/year)</label><input class="inp" id="nn-salary" type="number" placeholder="75000"/></div>
+  <div class="fg"><label class="lbl">Market Demand <span id="nn-dem-v" style="color:var(--pulsar)">0.80</span></label><input class="rng" id="nn-dem" type="range" min="0" max="1" step="0.05" value="0.8"/></div>
+  <div class="fg"><label class="lbl">Job Satisfaction <span id="nn-sat-v" style="color:var(--pulsar)">0.75</span></label><input class="rng" id="nn-sat" type="range" min="0" max="1" step="0.05" value="0.75"/></div>
+  <div class="fg"><label class="lbl">Experience Required (years)</label><input class="inp" id="nn-exp" type="number" value="3"/></div>
+  <div class="fg"><label class="lbl">Skills (comma separated)</label><input class="inp" id="nn-skills" placeholder="python, leadership"/></div>
+  <div class="modal-acts">
+    <button class="btn btn-c" onclick="closeModal('modal-node')">Cancel</button>
+    <button class="btn btn-g btn-full" onclick="confirmAddNode()">Add Star</button>
+  </div>
+</div>
+</div>
+
+<!-- MODAL: Add Edge -->
+<div class="modal-bg" id="modal-edge">
+<div class="modal">
+  <h2>🌀 Add Wormhole</h2>
+  <div class="fg"><label class="lbl">From Node</label><select class="sel" id="ee-from"></select></div>
+  <div class="fg"><label class="lbl">To Node</label><select class="sel" id="ee-to"></select></div>
+  <div class="fg"><label class="lbl">Transition Years</label><input class="inp" id="ee-years" type="number" value="2" min="0"/></div>
+  <div class="fg"><label class="lbl">Difficulty <span id="ee-diff-v" style="color:var(--pulsar)">0.50</span></label><input class="rng" id="ee-diff" type="range" min="0" max="1" step="0.05" value="0.5"/></div>
+  <div class="fg"><label class="lbl">Risk <span id="ee-risk-v" style="color:var(--pulsar)">0.30</span></label><input class="rng" id="ee-risk" type="range" min="0" max="1" step="0.05" value="0.3"/></div>
+  <div class="modal-acts">
+    <button class="btn btn-c" onclick="closeModal('modal-edge')">Cancel</button>
+    <button class="btn btn-g btn-full" onclick="confirmAddEdge()">Create Wormhole</button>
+  </div>
+</div>
+</div>
+
+<div id="app">
+<div id="topbar">
+  <div class="brand">
+    <div class="brand-orb"></div>
+    <div><div class="brand-name">PATHFORGE</div><div class="brand-sub">Career Universe · AI Powered</div></div>
+  </div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" id="tab-setup" onclick="switchView('setup')">01 · Setup<span class="tab-badge"></span></button>
+    <button class="nav-tab" id="tab-universe" onclick="switchView('universe')">02 · Universe<span class="tab-badge"></span></button>
+    <button class="nav-tab" id="tab-analysis" onclick="switchView('analysis')">03 · Analysis<span class="tab-badge"></span></button>
+  </div>
+  <div class="hdr-stats">
+    <div class="hstat"><div class="hstat-v" id="hs-n">0</div><div class="hstat-l">Stars</div></div>
+    <div class="hstat"><div class="hstat-v" id="hs-e">0</div><div class="hstat-l">Wormholes</div></div>
+    <div class="hstat"><div class="hstat-v" id="hs-f">0</div><div class="hstat-l">Futures</div></div>
+    <div class="hstat"><div class="hstat-v" id="hs-o">0</div><div class="hstat-l">Optimal</div></div>
+  </div>
+</div>
+
+<div id="views">
+
+<!-- VIEW 1: SETUP -->
+<div class="view active" id="view-setup">
+  <div class="setup-left">
+    <div class="ph"><div class="ph-dot"></div><h2>Mission Config</h2></div>
+    <div class="fsec">
+      <div class="stitle">Starting Point</div>
+      <div class="fg"><label class="lbl">Your Current Role</label><select class="sel" id="src-sel"><option value="">— select —</option></select></div>
+      <div class="fg"><label class="lbl">Your Profile</label><input class="inp" id="user-profile" value="junior developer beginning career"/></div>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Star Nodes (Career Roles)</div>
+      <div class="node-list" id="node-list"></div>
+      <div class="btn-row">
+        <button class="btn btn-c btn-sm" style="flex:1" onclick="openModal('modal-node')">+ Add Star</button>
+        <button class="btn btn-c btn-sm" style="flex:1" onclick="loadDefault()">Load Default</button>
+      </div>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Wormholes (Decisions)</div>
+      <div class="edge-list" id="edge-list"></div>
+      <button class="btn btn-c btn-sm btn-full mt8" onclick="openModal('modal-edge')">+ Add Wormhole</button>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Algorithm</div>
+      <div class="fg"><label class="lbl">Beam Width <span class="rng-v" id="bw-v">10</span></label><input class="rng" id="bw" type="range" min="2" max="20" step="1" value="10"/></div>
+      <div class="fg"><label class="lbl">Max Depth <span class="rng-v" id="md-v">6</span></label><input class="rng" id="md" type="range" min="2" max="8" step="1" value="6"/></div>
+      <div class="fg"><label class="lbl">Top K Results <span class="rng-v" id="tk-v">15</span></label><input class="rng" id="tk" type="range" min="5" max="30" step="1" value="15"/></div>
+    </div>
+    <div class="fsec">
+      <div class="stitle">Constraints</div>
+      <div class="fg"><label class="lbl">Profile</label>
+        <select class="sel" id="prof-sel">
+          <option value="balanced">Balanced</option>
+          <option value="conservative">Conservative (low risk)</option>
+          <option value="ambitious">Ambitious (high salary)</option>
+          <option value="fast_track">Fast Track</option>
+        </select>
+      </div>
+      <div class="fg"><label class="lbl">Max Years <span class="rng-v" id="my-v">12</span></label><input class="rng" id="my" type="range" min="2" max="20" step="1" value="12"/></div>
+      <div class="fg"><label class="lbl">Max Risk <span class="rng-v" id="mr-v">0.60</span></label><input class="rng" id="mr" type="range" min="0.1" max="1" step="0.05" value="0.6"/></div>
+      <div class="fg"><label class="lbl">Analysis Criterion</label><input class="inp" id="criterion" value="best overall growth with manageable risk"/></div>
+    </div>
+    <div style="padding:12px;flex-shrink:0;border-top:1px solid var(--border)">
+      <button class="btn btn-launch" id="launch-btn" onclick="launchExploration()">🚀  Explore All Futures</button>
+    </div>
+  </div>
+  <div class="setup-right">
+    <div class="ph"><div class="ph-dot" style="background:var(--quasar);box-shadow:0 0 8px var(--quasar)"></div><h2>Live Graph Preview</h2></div>
+    <div class="preview-wrap">
+      <canvas id="preview-canvas"></canvas>
+      <div id="preview-msg"><h3>EMPTY UNIVERSE</h3><p>Add stars and wormholes to build your career graph</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- VIEW 2: UNIVERSE 3D -->
+<div class="view" id="view-universe">
+  <canvas id="three-canvas"></canvas>
+  <div id="srch-overlay">
+    <div class="so-title">EXPLORING FUTURES</div>
+    <div class="so-sub" id="so-sub">Initializing beam search...</div>
+    <div class="so-bar"><div class="so-fill" id="so-fill"></div></div>
+    <div class="so-stat" id="so-stat">—</div>
+    <div class="so-dots" id="so-dots"></div>
+  </div>
+  <div class="univ-ui">
+    <div class="univ-toolbar">
+      <button class="ctrl-btn on" id="cb-rot" title="Auto-rotate" onclick="toggleRot()">⟳</button>
+      <button class="ctrl-btn" title="Reset camera" onclick="resetCam()">⌂</button>
+      <div class="ctrl-sep"></div>
+      <button class="ctrl-btn" id="cb-traj" title="Toggle all trajectories" onclick="toggleAllTraj()">∿</button>
+      <button class="ctrl-btn on" id="cb-lbl" title="Toggle labels" onclick="toggleLbls()">A</button>
+      <div class="ctrl-sep"></div>
+      <button class="ctrl-btn" title="Zoom in" onclick="doZoom(-3)">+</button>
+      <button class="ctrl-btn" title="Zoom out" onclick="doZoom(3)">−</button>
+    </div>
+    <div class="univ-spacer"></div>
+    <div class="univ-statusbar">
+      <div class="sb-item"><div class="sb-dot" style="background:var(--green);box-shadow:0 0 5px var(--green)"></div><span class="sb-lbl">Status</span><span class="sb-val" id="sb-st">Ready</span></div>
+      <div class="sb-item"><div class="sb-dot" style="background:var(--pulsar)"></div><span class="sb-lbl">Depth</span><span class="sb-val" id="sb-d">—</span></div>
+      <div class="sb-item"><div class="sb-dot" style="background:var(--quasar)"></div><span class="sb-lbl">Beam</span><span class="sb-val" id="sb-b">—</span></div>
+      <div class="sb-item"><div class="sb-dot" style="background:var(--gold)"></div><span class="sb-lbl">Paths</span><span class="sb-val" id="sb-p">—</span></div>
+      <div class="sb-hint">Drag · Scroll zoom · Click nodes to inspect</div>
+    </div>
+  </div>
+</div>
+
+<!-- VIEW 3: ANALYSIS -->
+<div class="view" id="view-analysis">
+<div class="analysis-wrap">
+  <div class="ah"><h2>MULTIVERSE ANALYSIS</h2><p>All discovered trajectories ranked by Pareto optimality · Click any card to highlight in Universe view</p></div>
+  <div id="best-sec" style="display:none">
+    <div class="best-sec">
+      <div class="bt-crown">🏆</div>
+      <div class="bt-title">OPTIMAL TRAJECTORY — PARETO FRONT #1</div>
+      <div class="bt-path" id="bt-path"></div>
+      <div class="bt-metrics" id="bt-mets"></div>
+    </div>
+  </div>
+  <div class="llm-panel">
+    <div class="llm-hdr">
+      <span class="llm-title">🤖 Gemini AI Analysis</span>
+      <button class="btn btn-c btn-sm" id="analyze-btn" onclick="requestAnalysis()">Analyze All</button>
+    </div>
+    <div class="crit-row"><input class="inp" id="crit-disp" value="best overall growth with manageable risk"/></div>
+    <div class="llm-body" id="llm-body">Awaiting trajectory data... Run exploration first.</div>
+  </div>
+  <div class="ah" style="margin-top:6px"><h2 style="font-size:11px">ALL FUTURES <span id="traj-count" style="color:var(--muted);font-size:10px"></span></h2></div>
+  <div class="traj-grid" id="traj-grid"><div class="empty-msg" style="grid-column:1/-1">No trajectories yet. Run exploration from Setup tab.</div></div>
+  <div class="step-sec" id="step-sec" style="display:none">
+    <div class="step-sec-title">DECISION BREAKDOWN — BEST TRAJECTORY</div>
+    <div class="step-grid" id="step-grid"></div>
+  </div>
+</div>
+</div>
+
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════
+   PATHFORGE — Main Application
+   A. State
+   B. SpaceBG  — animated 2D space background
+   C. Preview  — 2D setup preview
+   D. U3D      — Three.js 3D universe
+   E. API      — backend calls
+   F. Demo     — offline simulation
+   G. UI       — helpers
+   H. Logic    — exploration + analysis
+   I. Init
+═══════════════════════════════════════════════════════ */
+
+// A. STATE
+const S={nodes:[],edges:[],trajectories:[],exploring:false,autoRot:true,showLbls:true,showAllTraj:false,currentView:'setup',API:'http://localhost:8000'};
+const PAL=[0x00c8ff,0xb44dff,0xffc843,0xff6b35,0x00ff8c,0xff3355,0x4fc3f7,0xce93d8,0xffcc02,0x69f0ae,0xf48fb1,0x80deea,0xff9800,0x00bcd4,0x9c27b0,0x4caf50];
+const pc=i=>'#'+PAL[i%PAL.length].toString(16).padStart(6,'0');
+
+// B. SPACE BACKGROUND — deep space with constellations, planets, shooting stars
+const SpaceBG=(()=>{
+  let cv,cx,W,H,stars=[],nebulae=[],planets=[],shoots=[],consts=[],t=0;
+  function init(){
+    cv=document.getElementById('space-canvas');cx=cv.getContext('2d');
+    resize();window.addEventListener('resize',()=>{resize();build();});build();render();
+  }
+  function resize(){W=cv.width=window.innerWidth;H=cv.height=window.innerHeight;}
+  function build(){
+    stars=[];
+    for(let i=0;i<800;i++) stars.push({x:Math.random()*W,y:Math.random()*H,r:.2+Math.random()*1.4,a:.3+Math.random()*.7,da:(Math.random()-.5)*.007,tw:Math.random()*Math.PI*2,col:['#a0cfff','#ffe8b0','#c0a0ff','#ffffff','#80ffcc'][Math.floor(Math.random()*5)]});
+    nebulae=[];
+    const nc=[['#0a1a3a','#1a0a2a'],['#0a2a1a','#1a2a0a'],['#2a0a1a','#1a1a2a'],['#0a1a2a','#2a0a2a'],['#1a0a3a','#0a1a1a']];
+    for(let i=0;i<7;i++) nebulae.push({x:Math.random()*W,y:Math.random()*H,rx:100+Math.random()*220,ry:70+Math.random()*160,rot:Math.random()*Math.PI,c1:nc[i%nc.length][0],c2:nc[i%nc.length][1],op:.1+Math.random()*.14});
+    consts=[
+      {pts:[[.08,.18],[.14,.13],[.21,.17],[.27,.12],[.34,.19]]},
+      {pts:[[.58,.08],[.64,.14],[.71,.09],[.69,.19],[.64,.24]]},
+      {pts:[[.84,.38],[.90,.33],[.92,.41],[.88,.47],[.82,.44]]},
+      {pts:[[.38,.68],[.44,.63],[.50,.71],[.48,.79],[.41,.77]]},
+      {pts:[[.18,.83],[.24,.78],[.31,.81],[.29,.89]]},
+      {pts:[[.55,.35],[.60,.28],[.66,.33],[.64,.42],[.58,.45]]},
+    ].map(c=>({pts:c.pts.map(p=>({x:p[0]*W,y:p[1]*H}))}));
+    planets=[
+      {x:W*.76,y:H*.19,r:17,h:220,ring:true,sp:.0003},
+      {x:W*.14,y:H*.72,r:10,h:40,ring:false,sp:.0005},
+      {x:W*.89,y:H*.76,r:7,h:160,ring:false,sp:.0008},
+      {x:W*.44,y:H*.87,r:13,h:300,ring:true,sp:.0002},
+    ];
+    shoots=[];
+  }
+  function render(){
+    requestAnimationFrame(render);t+=.007;
+    const g=cx.createRadialGradient(W*.5,H*.5,0,W*.5,H*.5,Math.max(W,H)*.72);
+    g.addColorStop(0,'#030b1a');g.addColorStop(.5,'#02060f');g.addColorStop(1,'#00000a');
+    cx.fillStyle=g;cx.fillRect(0,0,W,H);
+    nebulae.forEach(n=>{
+      cx.save();cx.translate(n.x,n.y);cx.rotate(n.rot+t*.008);
+      const ng=cx.createRadialGradient(0,0,0,0,0,n.rx);
+      ng.addColorStop(0,n.c1);ng.addColorStop(1,'transparent');
+      cx.globalAlpha=n.op*(.8+.2*Math.sin(t*.3));cx.scale(1,n.ry/n.rx);
+      cx.beginPath();cx.arc(0,0,n.rx,0,Math.PI*2);cx.fillStyle=ng;cx.fill();cx.restore();
+    });
+    cx.save();cx.strokeStyle='rgba(140,170,255,0.14)';cx.lineWidth=.7;cx.setLineDash([3,6]);
+    consts.forEach(c=>{cx.beginPath();c.pts.forEach((p,i)=>i===0?cx.moveTo(p.x,p.y):cx.lineTo(p.x,p.y));cx.stroke();});
+    cx.setLineDash([]);
+    consts.forEach(c=>c.pts.forEach(p=>{cx.beginPath();cx.arc(p.x,p.y,1.5,0,Math.PI*2);cx.fillStyle='rgba(180,210,255,0.6)';cx.fill();}));
+    cx.restore();
+    stars.forEach(s=>{
+      s.tw+=s.da;const a=s.a*(.5+.5*Math.sin(s.tw));
+      cx.save();cx.globalAlpha=a;cx.fillStyle=s.col;cx.beginPath();cx.arc(s.x,s.y,s.r,0,Math.PI*2);cx.fill();
+      if(s.r>1.1){cx.globalAlpha=a*.35;cx.strokeStyle=s.col;cx.lineWidth=.5;const fl=s.r*3;cx.beginPath();cx.moveTo(s.x-fl,s.y);cx.lineTo(s.x+fl,s.y);cx.moveTo(s.x,s.y-fl);cx.lineTo(s.x,s.y+fl);cx.stroke();}
+      cx.restore();
+    });
+    planets.forEach(p=>{
+      const px=p.x+Math.sin(t*p.sp*100)*12,py=p.y+Math.cos(t*p.sp*80)*7;
+      cx.save();
+      const gl=cx.createRadialGradient(px,py,0,px,py,p.r*3);
+      gl.addColorStop(0,`hsla(${p.h},80%,60%,.18)`);gl.addColorStop(1,'transparent');
+      cx.fillStyle=gl;cx.beginPath();cx.arc(px,py,p.r*3,0,Math.PI*2);cx.fill();
+      const bo=cx.createRadialGradient(px-p.r*.3,py-p.r*.3,p.r*.1,px,py,p.r);
+      bo.addColorStop(0,`hsl(${p.h+30},70%,72%)`);bo.addColorStop(.5,`hsl(${p.h},60%,42%)`);bo.addColorStop(1,`hsl(${p.h-20},70%,18%)`);
+      cx.fillStyle=bo;cx.beginPath();cx.arc(px,py,p.r,0,Math.PI*2);cx.fill();
+      cx.globalAlpha=.28;cx.strokeStyle=`hsl(${p.h+40},80%,70%)`;cx.lineWidth=1.5;cx.beginPath();cx.arc(px,py,p.r+2,0,Math.PI*2);cx.stroke();
+      if(p.ring){cx.globalAlpha=.33;cx.strokeStyle=`hsl(${p.h},60%,65%)`;cx.lineWidth=2;cx.save();cx.translate(px,py);cx.scale(1,.28);cx.beginPath();cx.arc(0,0,p.r*2.2,0,Math.PI*2);cx.stroke();cx.restore();}
+      cx.restore();
+    });
+    if(shoots.length<3&&Math.random()<.004) shoots.push({x:Math.random()*W,y:Math.random()*(H*.4),vx:4+Math.random()*6,vy:2+Math.random()*3,len:65+Math.random()*80,life:1});
+    shoots=shoots.filter(ss=>{
+      ss.x+=ss.vx;ss.y+=ss.vy;ss.life-=.024;if(ss.life<=0)return false;
+      const mag=Math.hypot(ss.vx,ss.vy);cx.save();cx.globalAlpha=ss.life*.85;
+      const sg=cx.createLinearGradient(ss.x,ss.y,ss.x-ss.vx*ss.len/mag,ss.y-ss.vy*ss.len/mag);
+      sg.addColorStop(0,'#ffffff');sg.addColorStop(1,'transparent');
+      cx.strokeStyle=sg;cx.lineWidth=1.5;cx.beginPath();cx.moveTo(ss.x,ss.y);cx.lineTo(ss.x-ss.vx*ss.len/mag,ss.y-ss.vy*ss.len/mag);cx.stroke();cx.restore();
+      return true;
+    });
+  }
+  return{init};
+})();
+
+// C. PREVIEW CANVAS
+const Preview=(()=>{
+  let cv,cx,W,H,hov=null;const pos={};
+  function init(){cv=document.getElementById('preview-canvas');cx=cv.getContext('2d');resize();cv.addEventListener('mousemove',onHov);window.addEventListener('resize',()=>{resize();draw();});}
+  function resize(){const w=cv.parentElement;W=cv.width=w.clientWidth||600;H=cv.height=w.clientHeight||400;}
+  function layout(){
+    const n=S.nodes.length;if(!n)return;const cx2=W/2,cy2=H/2,r=Math.min(W,H)*.34;
+    S.nodes.forEach((nd,i)=>{const a=(i/n)*Math.PI*2-Math.PI/2,jt=Math.sin(i*7.3+2)*18;pos[nd.id]={x:cx2+Math.cos(a)*(r+jt),y:cy2+Math.sin(a)*(r+jt*.5),col:pc(i),i};});
+  }
+  function draw(){
+    if(!cx)return;cx.clearRect(0,0,W,H);
+    if(!S.nodes.length){document.getElementById('preview-msg').style.display='flex';return;}
+    document.getElementById('preview-msg').style.display='none';layout();
+    S.edges.forEach(e=>{
+      const a=pos[e.from_node],b=pos[e.to_node];if(!a||!b)return;
+      const mx=(a.x+b.x)/2+(b.y-a.y)*.15,my=(a.y+b.y)/2-(b.x-a.x)*.15;
+      cx.save();cx.globalAlpha=.35;cx.strokeStyle='rgba(0,200,255,0.55)';cx.lineWidth=1.2;cx.setLineDash([4,6]);
+      cx.beginPath();cx.moveTo(a.x,a.y);cx.quadraticCurveTo(mx,my,b.x,b.y);cx.stroke();
+      const dx=b.x-mx,dy=b.y-my,ang=Math.atan2(dy,dx);
+      cx.globalAlpha=.5;cx.setLineDash([]);cx.fillStyle='rgba(0,200,255,0.6)';
+      cx.beginPath();cx.moveTo(b.x,b.y);cx.lineTo(b.x-8*Math.cos(ang-.4),b.y-8*Math.sin(ang-.4));cx.lineTo(b.x-8*Math.cos(ang+.4),b.y-8*Math.sin(ang+.4));cx.closePath();cx.fill();cx.restore();
+    });
+    S.nodes.forEach(nd=>{
+      const p=pos[nd.id];if(!p)return;
+      const isH=hov===nd.id,isS=document.getElementById('src-sel').value===nd.id;
+      const r=isH?13:isS?12:9;
+      cx.save();cx.globalAlpha=isH?.45:.2;cx.fillStyle=p.col;cx.beginPath();cx.arc(p.x,p.y,r*2.5,0,Math.PI*2);cx.fill();
+      cx.globalAlpha=1;cx.fillStyle=p.col;cx.shadowColor=p.col;cx.shadowBlur=isH?22:10;cx.beginPath();cx.arc(p.x,p.y,r,0,Math.PI*2);cx.fill();
+      if(isS){cx.strokeStyle='#fff';cx.lineWidth=2;cx.shadowBlur=0;cx.beginPath();cx.arc(p.x,p.y,r+4,0,Math.PI*2);cx.stroke();}
+      cx.restore();
+      cx.save();cx.font=`${isH?'500 ':''}12px 'Rajdhani',sans-serif`;cx.fillStyle=isH?'#fff':'rgba(221,238,255,.7)';cx.textAlign='center';cx.fillText(nd.label,p.x,p.y+r+13);cx.restore();
+    });
+  }
+  function onHov(e){const rc=cv.getBoundingClientRect(),mx=e.clientX-rc.left,my=e.clientY-rc.top;hov=null;for(const nd of S.nodes){const p=pos[nd.id];if(p&&Math.hypot(mx-p.x,my-p.y)<15){hov=nd.id;break;}}cv.style.cursor=hov?'pointer':'default';draw();}
+  return{init,draw};
+})();
+
+// D. THREE.JS UNIVERSE
+const U3D=(()=>{
+  let scene,camera,renderer;let rc,mouse;
+  const NM={},EL=[],TL=[],BL=[],LS=[];
+  let phi=Math.PI/2.5,theta=0,radius=30;
+  let isDrag=false,pmx=0,pmy=0;
+  let autoRot=true,showLbls=true,t3=0;
+
+  function init(){
+    const cv=document.getElementById('three-canvas');if(!cv)return;
+    scene=new THREE.Scene();scene.fog=new THREE.FogExp2(0x00000a,.007);
+    camera=new THREE.PerspectiveCamera(55,cv.clientWidth/cv.clientHeight,.1,800);
+    updCam();
+    renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true,alpha:false});
+    renderer.setSize(cv.clientWidth,cv.clientHeight);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+    renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
+    rc=new THREE.Raycaster();mouse=new THREE.Vector2();
+    scene.add(new THREE.AmbientLight(0x0a1628,3));
+    const pl=new THREE.PointLight(0x00c8ff,4,100);pl.position.set(0,0,25);scene.add(pl);
+    const pl2=new THREE.PointLight(0xb44dff,2,80);pl2.position.set(-20,10,-10);scene.add(pl2);
+    _particles();_nebula();
+    cv.addEventListener('mousedown',e=>{isDrag=true;pmx=e.clientX;pmy=e.clientY;});
+    window.addEventListener('mouseup',()=>isDrag=false);
+    cv.addEventListener('mousemove',onMM);cv.addEventListener('click',onMC);
+    cv.addEventListener('wheel',e=>{radius=Math.max(8,Math.min(70,radius+e.deltaY*.04));});
+    window.addEventListener('resize',()=>{if(!renderer)return;renderer.setSize(cv.clientWidth,cv.clientHeight);camera.aspect=cv.clientWidth/cv.clientHeight;camera.updateProjectionMatrix();});
+    anim();
+  }
+  function _particles(){
+    const n=4000,geo=new THREE.BufferGeometry(),p=new Float32Array(n*3),c=new Float32Array(n*3);
+    for(let i=0;i<n;i++){p[i*3]=(Math.random()-.5)*600;p[i*3+1]=(Math.random()-.5)*600;p[i*3+2]=(Math.random()-.5)*600;const t=Math.random();if(t<.55){c[i*3]=.55;c[i*3+1]=.75;c[i*3+2]=1;}else if(t<.8){c[i*3]=1;c[i*3+1]=.9;c[i*3+2]=.5;}else{c[i*3]=.7;c[i*3+1]=.4;c[i*3+2]=1;}}
+    geo.setAttribute('position',new THREE.BufferAttribute(p,3));geo.setAttribute('color',new THREE.BufferAttribute(c,3));
+    scene.add(new THREE.Points(geo,new THREE.PointsMaterial({size:.15,vertexColors:true,transparent:true,opacity:.75,sizeAttenuation:true})));
+  }
+  function _nebula(){
+    [[0x0a1628,.06],[0x1a0a3a,.05],[0x0a2a1a,.04]].forEach(([cl,op])=>{
+      const m=new THREE.Mesh(new THREE.PlaneGeometry(200,140),new THREE.MeshBasicMaterial({color:cl,transparent:true,opacity:op,side:THREE.DoubleSide}));
+      m.position.set((Math.random()-.5)*50,(Math.random()-.5)*30,-60-Math.random()*40);m.rotation.z=Math.random()*Math.PI;scene.add(m);
+    });
+  }
+  function updCam(){camera.position.set(radius*Math.sin(phi)*Math.sin(theta),radius*Math.cos(phi),radius*Math.sin(phi)*Math.cos(theta));camera.lookAt(0,0,0);}
+  function npos(nd,i,tot){
+    const g=Math.PI*(3-Math.sqrt(5)),y=1-(i/Math.max(tot-1,1))*2,r2=Math.sqrt(1-y*y),a=g*i,sp=10+(nd.avg_salary/18000);
+    return new THREE.Vector3(Math.cos(a)*r2*sp,y*sp,Math.sin(a)*r2*sp);
+  }
+  function addNode(nd,i){
+    const tot=S.nodes.length,p=npos(nd,i,tot),cl=PAL[i%PAL.length],sz=.27+(nd.avg_salary/200000)*.5;
+    const m=new THREE.Mesh(new THREE.SphereGeometry(sz,20,20),new THREE.MeshStandardMaterial({color:cl,emissive:cl,emissiveIntensity:.55,metalness:.1,roughness:.15}));
+    m.position.copy(p);m.userData={nodeId:nd.id,baseScale:1,phase:i*.8,color:cl};scene.add(m);NM[nd.id]=m;
+    const gw=new THREE.Mesh(new THREE.SphereGeometry(sz*3,16,16),new THREE.MeshBasicMaterial({color:cl,transparent:true,opacity:.11,side:THREE.BackSide}));
+    m.add(gw);m.userData.glow=gw;
+    const sm=new THREE.LineBasicMaterial({color:cl,transparent:true,opacity:.5});
+    [[1,0,0],[0,1,0],[0,0,1]].forEach(ax=>{m.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-ax[0]*sz*4,-ax[1]*sz*4,-ax[2]*sz*4),new THREE.Vector3(ax[0]*sz*4,ax[1]*sz*4,ax[2]*sz*4)]),sm));});
+    if(showLbls)addLabel(nd,m,cl);
+  }
+  function addLabel(nd,mesh,cl){
+    const cv2=document.createElement('canvas');cv2.width=256;cv2.height=60;
+    const c=cv2.getContext('2d');c.clearRect(0,0,256,60);c.font='bold 20px Rajdhani,sans-serif';
+    c.fillStyle='rgba(0,0,0,.5)';c.fillRect(0,18,256,28);
+    c.fillStyle='#'+cl.toString(16).padStart(6,'0');c.textAlign='center';c.fillText(nd.label,128,38);
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv2),transparent:true}));
+    const s=mesh.geometry.parameters.radius;sp.scale.set(3.8,.95,1);sp.position.set(0,s+.75,0);
+    mesh.add(sp);mesh.userData.lbl=sp;LS.push(sp);
+  }
+  function rebuildAll(){
+    Object.keys(NM).forEach(id=>{scene.remove(NM[id]);delete NM[id];});EL.forEach(l=>scene.remove(l));EL.length=0;LS.length=0;
+    S.nodes.forEach((n,i)=>addNode(n,i));buildEdges();
+  }
+  function buildEdges(){
+    EL.forEach(l=>scene.remove(l));EL.length=0;
+    S.edges.forEach(e=>{
+      const a=NM[e.from_node],b=NM[e.to_node];if(!a||!b)return;
+      const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(curv(a.position,b.position,14)),new THREE.LineBasicMaterial({color:0x0a2040,transparent:true,opacity:.22+(.6-e.risk)*.3}));
+      scene.add(l);EL.push(l);
+    });
+  }
+  function curv(a,b,n){const m=new THREE.Vector3().addVectors(a,b).multiplyScalar(.5);m.x+=(Math.random()-.5)*3;m.y+=(Math.random()-.5)*3;return new THREE.QuadraticBezierCurve3(a,m,b).getPoints(n);}
+  function clearTL(){TL.forEach(l=>scene.remove(l));TL.length=0;Object.values(NM).forEach(m=>{m.userData.selected=false;m.userData.baseScale=1;m.material.emissiveIntensity=.55;});}
+  function clearBL(){BL.forEach(l=>scene.remove(l));BL.length=0;}
+  function hlTraj(nodes,cl=0xffd700){
+    clearTL();
+    for(let i=0;i<nodes.length-1;i++){const a=NM[nodes[i]],b=NM[nodes[i+1]];if(!a||!b)continue;const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(curv(a.position,b.position,22)),new THREE.LineBasicMaterial({color:cl,transparent:true,opacity:.95}));scene.add(l);TL.push(l);}
+    nodes.forEach(id=>{const m=NM[id];if(m){m.userData.selected=true;m.userData.baseScale=1.5;m.material.emissiveIntensity=1.2;}});
+  }
+  function animBeam(beam,completed){
+    clearBL();
+    beam.forEach(path=>{for(let i=0;i<path.length-1;i++){const a=NM[path[i]],b=NM[path[i+1]];if(!a||!b)continue;const l=new THREE.Line(new THREE.BufferGeometry().setFromPoints(curv(a.position,b.position,9)),new THREE.LineBasicMaterial({color:0xb44dff,transparent:true,opacity:.78}));scene.add(l);BL.push(l);}});
+    completed.slice(-3).forEach(path=>path.forEach(id=>{const m=NM[id];if(m){const b=m.userData.baseScale||1;m.userData.baseScale=1.8;setTimeout(()=>m.userData.baseScale=b,320);}}));
+  }
+  function anim(){requestAnimationFrame(anim);t3+=.005;if(autoRot)theta+=.0025;updCam();Object.values(NM).forEach(m=>{const bs=m.userData.baseScale||1,pl=1+Math.sin(t3*2+m.userData.phase)*.07;m.scale.setScalar(bs*pl);if(m.userData.glow)m.userData.glow.material.opacity=.09+Math.sin(t3*2+m.userData.phase)*.04;});renderer&&renderer.render(scene,camera);}
+  function onMM(e){
+    if(isDrag){const dx=(e.clientX-pmx)*.005,dy=(e.clientY-pmy)*.005;theta-=dx;phi=Math.max(.2,Math.min(Math.PI-.2,phi+dy));pmx=e.clientX;pmy=e.clientY;}
+    const cv2=renderer.domElement,r=cv2.getBoundingClientRect();
+    mouse.x=((e.clientX-r.left)/r.width)*2-1;mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+    rc.setFromCamera(mouse,camera);
+    const ms=Object.values(NM),hits=rc.intersectObjects(ms);
+    ms.forEach(m=>{if(!m.userData.selected)m.material.emissiveIntensity=.55;});
+    document.getElementById('node-popup').classList.remove('show');cv2.style.cursor='default';
+    if(hits.length){hits[0].object.material.emissiveIntensity=1.3;cv2.style.cursor='pointer';const nd=S.nodes.find(n=>n.id===hits[0].object.userData.nodeId);if(nd)showPopup(nd,e.clientX,e.clientY);}
+  }
+  function onMC(e){
+    const cv2=renderer.domElement,r=cv2.getBoundingClientRect();
+    mouse.x=((e.clientX-r.left)/r.width)*2-1;mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+    rc.setFromCamera(mouse,camera);const hits=rc.intersectObjects(Object.values(NM));
+    if(hits.length){const nd=S.nodes.find(n=>n.id===hits[0].object.userData.nodeId);if(nd)toast(`${nd.label} · $${nd.avg_salary.toLocaleString()}/yr · ${(nd.satisfaction*100).toFixed(0)}% satisfaction`,'info');}
+  }
+  return{
+    init,rebuildAll,buildEdges,clearTL,clearBL,hlTraj,animBeam,
+    setRot:v=>autoRot=v,
+    setLbls:v=>{showLbls=v;Object.values(NM).forEach(m=>{if(m.userData.lbl)m.userData.lbl.visible=v;});},
+    resetCam:()=>{phi=Math.PI/2.5;theta=0;radius=30;},
+    zoom:d=>radius=Math.max(8,Math.min(70,radius+d)),
+    get autoRot(){return autoRot;},
+  };
+})();
+
+function showPopup(nd,x,y){
+  document.getElementById('np-title').textContent=nd.label.toUpperCase();
+  document.getElementById('np-body').innerHTML=`<div class="np-row"><span class="np-k">Salary</span><span class="np-v">$${nd.avg_salary.toLocaleString()}/yr</span></div><div class="np-row"><span class="np-k">Demand</span><span class="np-v">${(nd.demand*100).toFixed(0)}%</span></div><div class="np-row"><span class="np-k">Satisfaction</span><span class="np-v">${(nd.satisfaction*100).toFixed(0)}%</span></div><div class="np-row"><span class="np-k">Experience</span><span class="np-v">${nd.years_experience} yrs</span></div><div class="np-row"><span class="np-k">Skills</span><span class="np-v">${(nd.skills||[]).slice(0,3).join(', ')}</span></div>`;
+  const p=document.getElementById('node-popup');p.style.left=Math.min(x+14,window.innerWidth-245)+'px';p.style.top=Math.min(y+14,window.innerHeight-175)+'px';p.classList.add('show');
+}
+
+// E. API
+const API={
+  async loadDefault(){try{const r=await fetch(`${S.API}/api/graph`);if(!r.ok)throw 0;return r.json();}catch{return null;}},
+  async analyze(trajs,crit,prof){const r=await fetch(`${S.API}/api/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trajectories:trajs,criterion:crit,user_profile:prof})});return r.json();},
+  exploreWS(req,onStep,onResult,onDone,onErr){
+    try{
+      const ws=new WebSocket(S.API.replace('http','ws')+'/ws/explore');
+      ws.onopen=()=>ws.send(JSON.stringify({type:'start',data:req}));
+      ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='step')onStep(m);if(m.type==='result')onResult(m);if(m.type==='done')onDone();if(m.type==='error')onErr(m.msg);};
+      ws.onerror=()=>onErr('WS failed');
+    }catch(e){onErr(e.message);}
+  },
+};
+
+// F. DEMO ENGINE
+function runDemo(req,onStep,onResult,onDone){
+  toast('Running in demo mode (backend offline)','info');
+  const adj={};S.edges.forEach(e=>{if(!adj[e.from_node])adj[e.from_node]=[];adj[e.from_node].push(e.to_node);});
+  let beam=[[req.source]],completed=[],depth=0;
+  const maxD=Math.min(req.max_depth||5,6),bw=req.beam_width||8;
+  function step(){
+    if(depth>=maxD||!beam.length){
+      const sc=completed.slice(0,20).map((path,i)=>{
+        const n0=S.nodes.find(n=>n.id===path[0]),nF=S.nodes.find(n=>n.id===path[path.length-1]);
+        const sg=nF&&n0?(nF.avg_salary-n0.avg_salary)/Math.max(n0.avg_salary,1):Math.random()*3;
+        return{nodes:path,pareto_rank:i<3?0:i<7?1:2,crowding_distance:Math.random()*5,scores:{salary_growth:+sg.toFixed(3),avg_demand:+(.6+Math.random()*.35).toFixed(3),avg_satisfaction:+(.6+Math.random()*.28).toFixed(3),final_salary:nF?nF.avg_salary:50000+Math.random()*120000,total_years:path.length*2,avg_risk:+(.1+Math.random()*.5).toFixed(3),avg_difficulty:+(.2+Math.random()*.55).toFixed(3)}};
+      }).sort((a,b)=>b.scores.salary_growth-a.scores.salary_growth);
+      onResult({trajectories:sc});onDone();return;
+    }
+    const nb=[];
+    beam.forEach(path=>{const cur=path[path.length-1];(adj[cur]||[]).forEach(next=>{if(!path.includes(next)){const np=[...path,next];if(np.length>=2)completed.push(np);nb.push(np);}});});
+    beam=nb.slice(0,bw);depth++;
+    onStep({depth,beam,completed:completed.slice(-15)});
+    setTimeout(step,520);
+  }
+  setTimeout(step,200);
+}
+
+// G. UI HELPERS
+function toast(msg,type='info'){
+  const c=document.getElementById('toasts'),el=document.createElement('div');
+  el.className=`toast t-${type==='ok'?'ok':type==='error'||type==='err'?'err':'info'}`;
+  el.textContent=msg;c.appendChild(el);
+  setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .4s';setTimeout(()=>el.remove(),400);},3000);
+}
+function updateStats(){document.getElementById('hs-n').textContent=S.nodes.length;document.getElementById('hs-e').textContent=S.edges.length;document.getElementById('hs-f').textContent=S.trajectories.length;document.getElementById('hs-o').textContent=S.trajectories.filter(t=>t.pareto_rank===0).length;}
+function renderNodeList(){
+  const el=document.getElementById('node-list'),sel=document.getElementById('src-sel'),cur=sel.value;
+  el.innerHTML='';sel.innerHTML='<option value="">— select —</option>';
+  const ef=document.getElementById('ee-from'),et=document.getElementById('ee-to');
+  if(ef){ef.innerHTML='';et.innerHTML='';}
+  S.nodes.forEach((nd,i)=>{
+    const col=pc(i);const div=document.createElement('div');div.className='node-item'+(S.selectedNode===nd.id?' sel-node':'');
+    div.innerHTML=`<div class="n-star" style="background:${col};color:${col}"></div><div style="flex:1;min-width:0"><div class="n-name">${nd.label}</div><div class="n-sal">$${nd.avg_salary.toLocaleString()}/yr</div></div><button class="n-rm" onclick="event.stopPropagation();removeNode('${nd.id}')">✕</button>`;
+    div.onclick=()=>{S.selectedNode=nd.id;renderNodeList();};el.appendChild(div);
+    sel.innerHTML+=`<option value="${nd.id}"${nd.id===cur?' selected':''}>${nd.label}</option>`;
+    if(ef){ef.innerHTML+=`<option value="${nd.id}">${nd.label}</option>`;et.innerHTML+=`<option value="${nd.id}">${nd.label}</option>`;}
+  });
+}
+function renderEdgeList(){
+  const el=document.getElementById('edge-list');el.innerHTML='';
+  if(!S.edges.length){el.innerHTML='<div class="empty-msg">No wormholes yet</div>';return;}
+  S.edges.forEach((e,i)=>{
+    const fl=S.nodes.find(n=>n.id===e.from_node)?.label||e.from_node,tl=S.nodes.find(n=>n.id===e.to_node)?.label||e.to_node;
+    const div=document.createElement('div');div.className='edge-item';
+    div.innerHTML=`<span class="e-from">${fl}</span><span class="e-arr">→</span><span class="e-to">${tl}</span><span style="font-size:9px;color:var(--muted);flex-shrink:0">${e.transition_years}yr</span><button class="e-rm" onclick="removeEdge(${i})">✕</button>`;
+    el.appendChild(div);
+  });
+}
+function switchView(name){
+  S.currentView=name;
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(`view-${name}`).classList.add('active');
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));document.getElementById(`tab-${name}`).classList.add('active');
+  if(name==='universe'){setTimeout(()=>{if(!U3D._init){U3D.init();U3D._init=true;}U3D.rebuildAll();},60);}
+}
+function openModal(id){if(id==='modal-edge')renderNodeList();document.getElementById(id).classList.add('show');}
+function closeModal(id){document.getElementById(id).classList.remove('show');}
+function bindRange(id,vid,dec=0){
+  const el=document.getElementById(id),vEl=document.getElementById(vid);if(!el||!vEl)return;
+  const fmt=v=>dec?parseFloat(v).toFixed(dec):v;vEl.textContent=fmt(el.value);el.addEventListener('input',()=>vEl.textContent=fmt(el.value));
+}
+
+// H. APP LOGIC
+function confirmAddNode(){
+  const id=document.getElementById('nn-id').value.trim().replace(/\s+/g,'_');const label=document.getElementById('nn-label').value.trim();
+  const salary=parseFloat(document.getElementById('nn-salary').value)||50000;const demand=parseFloat(document.getElementById('nn-dem').value);
+  const sat=parseFloat(document.getElementById('nn-sat').value);const exp=parseInt(document.getElementById('nn-exp').value)||0;
+  const skills=document.getElementById('nn-skills').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!id||!label){toast('ID and Label required','err');return;}
+  if(S.nodes.find(n=>n.id===id)){toast('ID already exists','err');return;}
+  S.nodes.push({id,label,avg_salary:salary,demand,satisfaction:sat,years_experience:exp,skills,type:'role'});
+  closeModal('modal-node');renderNodeList();renderEdgeList();Preview.draw();updateStats();toast(`${label} added`,'ok');
+}
+function confirmAddEdge(){
+  const from=document.getElementById('ee-from').value,to=document.getElementById('ee-to').value;
+  const years=parseInt(document.getElementById('ee-years').value)||2,diff=parseFloat(document.getElementById('ee-diff').value),risk=parseFloat(document.getElementById('ee-risk').value);
+  if(from===to){toast('Source and destination must differ','err');return;}
+  if(S.edges.find(e=>e.from_node===from&&e.to_node===to)){toast('Edge already exists','err');return;}
+  S.edges.push({from_node:from,to_node:to,transition_years:years,difficulty:diff,risk});
+  closeModal('modal-edge');renderEdgeList();Preview.draw();updateStats();toast('Wormhole created','ok');
+}
+function removeNode(id){S.nodes=S.nodes.filter(n=>n.id!==id);S.edges=S.edges.filter(e=>e.from_node!==id&&e.to_node!==id);renderNodeList();renderEdgeList();Preview.draw();updateStats();}
+function removeEdge(i){S.edges.splice(i,1);renderEdgeList();Preview.draw();updateStats();}
+
+async function loadDefault(){
+  let data=await API.loadDefault();
+  if(!data) data={
+    nodes:[
+      {id:"junior_dev",label:"Junior Dev",avg_salary:25000,demand:.85,satisfaction:.65,years_experience:1,skills:["python","git"],type:"role"},
+      {id:"mid_dev",label:"Mid Developer",avg_salary:45000,demand:.90,satisfaction:.72,years_experience:3,skills:["python","design"],type:"role"},
+      {id:"senior_dev",label:"Senior Dev",avg_salary:75000,demand:.88,satisfaction:.78,years_experience:6,skills:["architecture","cloud"],type:"role"},
+      {id:"tech_lead",label:"Tech Lead",avg_salary:90000,demand:.75,satisfaction:.80,years_experience:8,skills:["leadership"],type:"role"},
+      {id:"data_scientist",label:"Data Scientist",avg_salary:70000,demand:.92,satisfaction:.80,years_experience:3,skills:["ml","python"],type:"role"},
+      {id:"ml_engineer",label:"ML Engineer",avg_salary:85000,demand:.94,satisfaction:.82,years_experience:5,skills:["mlops"],type:"role"},
+      {id:"devops_engineer",label:"DevOps Eng",avg_salary:72000,demand:.91,satisfaction:.74,years_experience:4,skills:["k8s","docker"],type:"role"},
+      {id:"engineering_manager",label:"Eng. Manager",avg_salary:110000,demand:.65,satisfaction:.75,years_experience:10,skills:["hiring"],type:"role"},
+      {id:"cto",label:"CTO",avg_salary:180000,demand:.40,satisfaction:.85,years_experience:15,skills:["strategy"],type:"role"},
+      {id:"freelancer",label:"Freelancer",avg_salary:55000,demand:.70,satisfaction:.83,years_experience:3,skills:["self_mgmt"],type:"role"},
+      {id:"startup_founder",label:"Founder",avg_salary:30000,demand:.50,satisfaction:.88,years_experience:5,skills:["resilience"],type:"role"},
+      {id:"product_manager",label:"Product Mgr",avg_salary:95000,demand:.80,satisfaction:.77,years_experience:5,skills:["analytics"],type:"role"},
+    ],
+    edges:[
+      {from_node:"junior_dev",to_node:"mid_dev",transition_years:2,difficulty:.4,risk:.2},
+      {from_node:"junior_dev",to_node:"data_scientist",transition_years:2,difficulty:.6,risk:.3},
+      {from_node:"junior_dev",to_node:"devops_engineer",transition_years:2,difficulty:.5,risk:.25},
+      {from_node:"junior_dev",to_node:"freelancer",transition_years:1,difficulty:.5,risk:.6},
+      {from_node:"mid_dev",to_node:"senior_dev",transition_years:3,difficulty:.5,risk:.2},
+      {from_node:"mid_dev",to_node:"data_scientist",transition_years:1,difficulty:.55,risk:.3},
+      {from_node:"mid_dev",to_node:"ml_engineer",transition_years:2,difficulty:.65,risk:.3},
+      {from_node:"mid_dev",to_node:"freelancer",transition_years:1,difficulty:.4,risk:.5},
+      {from_node:"senior_dev",to_node:"tech_lead",transition_years:2,difficulty:.6,risk:.25},
+      {from_node:"senior_dev",to_node:"ml_engineer",transition_years:1,difficulty:.6,risk:.25},
+      {from_node:"senior_dev",to_node:"product_manager",transition_years:2,difficulty:.7,risk:.4},
+      {from_node:"senior_dev",to_node:"startup_founder",transition_years:2,difficulty:.8,risk:.7},
+      {from_node:"tech_lead",to_node:"engineering_manager",transition_years:2,difficulty:.55,risk:.2},
+      {from_node:"tech_lead",to_node:"cto",transition_years:5,difficulty:.85,risk:.4},
+      {from_node:"data_scientist",to_node:"ml_engineer",transition_years:2,difficulty:.5,risk:.2},
+      {from_node:"data_scientist",to_node:"product_manager",transition_years:2,difficulty:.6,risk:.3},
+      {from_node:"ml_engineer",to_node:"cto",transition_years:7,difficulty:.85,risk:.4},
+      {from_node:"devops_engineer",to_node:"tech_lead",transition_years:3,difficulty:.65,risk:.3},
+      {from_node:"engineering_manager",to_node:"cto",transition_years:4,difficulty:.8,risk:.35},
+      {from_node:"product_manager",to_node:"cto",transition_years:6,difficulty:.8,risk:.4},
+      {from_node:"product_manager",to_node:"startup_founder",transition_years:3,difficulty:.7,risk:.6},
+      {from_node:"freelancer",to_node:"startup_founder",transition_years:2,difficulty:.65,risk:.65},
+    ],
+  };
+  S.nodes=data.nodes;S.edges=data.edges.map(e=>({from_node:e.from||e.from_node,to_node:e.to||e.to_node,...e}));
+  renderNodeList();renderEdgeList();Preview.draw();updateStats();
+  document.getElementById('src-sel').value='junior_dev';toast('Default career graph loaded','ok');
+}
+
+function launchExploration(){
+  const src=document.getElementById('src-sel').value;
+  if(!src){toast('Select a starting role first','err');return;}
+  if(S.nodes.length<2){toast('Add at least 2 nodes','err');return;}
+  S.exploring=true;document.getElementById('launch-btn').disabled=true;
+  toast('Launching exploration...','info');switchView('universe');
+  setTimeout(()=>{if(!U3D._init){U3D.init();U3D._init=true;}U3D.rebuildAll();setTimeout(startSearch,200);},100);
+}
+
+function startSearch(){
+  const src=document.getElementById('src-sel').value,maxD=parseInt(document.getElementById('md').value);
+  const ovl=document.getElementById('srch-overlay'),fill=document.getElementById('so-fill');
+  const sub=document.getElementById('so-sub'),stat=document.getElementById('so-stat'),dots=document.getElementById('so-dots');
+  ovl.classList.add('show');dots.innerHTML=Array.from({length:maxD},(_,i)=>`<div class="so-d" id="sod-${i}"></div>`).join('');
+  fill.style.width='0%';S.trajectories=[];
+  const req={source:src,nodes:S.nodes,edges:S.edges,profile:document.getElementById('prof-sel').value,max_years:parseInt(document.getElementById('my').value),max_risk:parseFloat(document.getElementById('mr').value),beam_width:parseInt(document.getElementById('bw').value),max_depth:maxD,top_k:parseInt(document.getElementById('tk').value),user_profile:document.getElementById('user-profile').value};
+  function onStep(msg){
+    fill.style.width=Math.min(98,(msg.depth/maxD)*100)+'%';sub.textContent=`Beam Search · Depth ${msg.depth} of ${maxD}`;stat.textContent=`${msg.beam.length} active beams · ${msg.completed.length} paths discovered`;
+    const dd=document.getElementById(`sod-${msg.depth-1}`);if(dd)dd.classList.add('on');
+    document.getElementById('sb-st').textContent='Exploring';document.getElementById('sb-d').textContent=msg.depth;document.getElementById('sb-b').textContent=msg.beam.length;document.getElementById('sb-p').textContent=msg.completed.length;
+    U3D.animBeam(msg.beam,msg.completed);
+  }
+  function onResult(msg){S.trajectories=msg.trajectories||[];fill.style.width='100%';sub.textContent='Processing results...';updateStats();renderAnalysis();document.getElementById('tab-analysis').classList.add('has-data');}
+  function onDone(){
+    S.exploring=false;document.getElementById('launch-btn').disabled=false;ovl.classList.remove('show');
+    document.getElementById('sb-st').textContent='Complete';document.getElementById('sb-p').textContent=S.trajectories.length;
+    U3D.clearBL();toast(`${S.trajectories.length} futures discovered!`,'ok');
+    const top=S.trajectories.slice(0,Math.min(3,S.trajectories.length)),cols=[0xffd700,0xb44dff,0x00c8ff];let i=0;
+    const cy=setInterval(()=>{if(i>=top.length){clearInterval(cy);if(S.trajectories.length){U3D.hlTraj(S.trajectories[0].nodes,0xffd700);toast('Best trajectory highlighted in gold','ok');}return;}U3D.hlTraj(top[i].nodes,cols[i%3]);i++;},1100);
+  }
+  function onErr(msg){console.warn('WS err, demo fallback:',msg);runDemo(req,onStep,onResult,onDone);}
+  try{API.exploreWS(req,onStep,onResult,onDone,onErr);}catch(e){runDemo(req,onStep,onResult,onDone);}
+}
+
+function renderAnalysis(){
+  const trajs=S.trajectories;document.getElementById('traj-count').textContent=`(${trajs.length} total · ${trajs.filter(t=>t.pareto_rank===0).length} optimal)`;
+  if(trajs.length){
+    const best=trajs[0];document.getElementById('best-sec').style.display='block';
+    document.getElementById('bt-path').innerHTML=best.nodes.map((n,i)=>`${i>0?'<span class="bt-arrow">→</span>':''}<span class="bt-node">${S.nodes.find(nd=>nd.id===n)?.label||n}</span>`).join('');
+    const s=best.scores;
+    document.getElementById('bt-mets').innerHTML=`<div class="bt-m"><div class="bt-mv">+${((s.salary_growth||0)*100).toFixed(0)}%</div><div class="bt-mk">Salary Growth</div></div><div class="bt-m"><div class="bt-mv">$${(s.final_salary||0).toLocaleString('en',{maximumFractionDigits:0})}</div><div class="bt-mk">Final Salary</div></div><div class="bt-m"><div class="bt-mv">${(s.total_years||0).toFixed(0)} yr</div><div class="bt-mk">Duration</div></div><div class="bt-m"><div class="bt-mv">${((s.avg_satisfaction||0)*100).toFixed(0)}%</div><div class="bt-mk">Satisfaction</div></div>`;
+    renderSteps(best);
+  }
+  const grid=document.getElementById('traj-grid'),cols=[0xffd700,0xb44dff,0x00c8ff,0xff6b35,0x00ff8c,0xff3355];
+  grid.innerHTML='';
+  trajs.forEach((t,i)=>{
+    const s=t.scores,rnk=Math.min(t.pareto_rank,2),col=pc(i);
+    const card=document.createElement('div');card.className=`tcard${i===0?' best-card':''}`;card.style.setProperty('--cc',col);
+    const rl=t.pareto_rank===0?'OPTIMAL':`RANK ${t.pareto_rank}`;
+    const pathStr=t.nodes.map(n=>S.nodes.find(nd=>nd.id===n)?.label||n).join(' → ');
+    card.innerHTML=`<div class="tc-badge r${rnk}">${rl}</div><div class="tc-path">${pathStr}</div><div class="tc-mets"><div class="tc-m"><span class="tc-mv" style="color:var(--green)">+${((s.salary_growth||0)*100).toFixed(0)}%</span><span class="tc-mk">growth</span></div><div class="tc-m"><span class="tc-mv" style="color:var(--gold)">$${Math.round((s.final_salary||0)/1000)}k</span><span class="tc-mk">final sal</span></div><div class="tc-m"><span class="tc-mv">${(s.total_years||0).toFixed(0)}yr</span><span class="tc-mk">duration</span></div><div class="tc-m"><span class="tc-mv" style="color:${(s.avg_risk||0)>.5?'var(--red)':'var(--green)'}">${((s.avg_risk||0)*100).toFixed(0)}%</span><span class="tc-mk">risk</span></div><div class="tc-m"><span class="tc-mv" style="color:var(--quasar)">${((s.avg_satisfaction||0)*100).toFixed(0)}%</span><span class="tc-mk">satisf.</span></div><div class="tc-m"><span class="tc-mv">${((s.avg_demand||0)*100).toFixed(0)}%</span><span class="tc-mk">demand</span></div></div>`;
+    card.onclick=()=>{switchView('universe');setTimeout(()=>U3D.hlTraj(t.nodes,cols[i%cols.length]),100);toast(`Highlighted: ${t.nodes.slice(0,3).join(' → ')}...`,'info');};
+    grid.appendChild(card);
+  });
+}
+function renderSteps(traj){
+  const sec=document.getElementById('step-sec'),grid=document.getElementById('step-grid');sec.style.display='block';grid.innerHTML='';
+  for(let i=0;i<traj.nodes.length-1;i++){
+    const fr=traj.nodes[i],to=traj.nodes[i+1];const frN=S.nodes.find(n=>n.id===fr),toN=S.nodes.find(n=>n.id===to);const edge=S.edges.find(e=>e.from_node===fr&&e.to_node===to);
+    const card=document.createElement('div');card.className='step-card';
+    card.innerHTML=`<div class="step-num">Decision ${i+1} of ${traj.nodes.length-1}</div><div class="step-nodes"><span class="step-n src-n">${frN?.label||fr}</span><span style="color:var(--muted);font-size:16px">→</span><span class="step-n dst-n">${toN?.label||to}</span></div><div class="step-desc">${edge?`~${edge.transition_years} year${edge.transition_years!==1?'s':''} · Difficulty ${(edge.difficulty*100).toFixed(0)}% · Risk ${(edge.risk*100).toFixed(0)}%.`:''} ${toN?`Salary becomes $${toN.avg_salary.toLocaleString()}/yr · ${(toN.satisfaction*100).toFixed(0)}% satisfaction.`:''}</div>`;
+    grid.appendChild(card);
+  }
+}
+async function requestAnalysis(){
+  if(!S.trajectories.length){toast('Run exploration first','err');return;}
+  const crit=document.getElementById('crit-disp').value||document.getElementById('criterion').value;const prof=document.getElementById('user-profile').value;
+  const el=document.getElementById('llm-body'),btn=document.getElementById('analyze-btn');
+  el.textContent='';el.classList.add('llm-typing');btn.disabled=true;toast('Consulting Gemini...','info');
+  try{const res=await API.analyze(S.trajectories.slice(0,5),crit,prof);el.classList.remove('llm-typing');el.textContent=res.analysis||'Analysis unavailable.';toast('Gemini analysis ready','ok');}
+  catch(e){el.classList.remove('llm-typing');el.textContent='[Backend offline]\n\nTo enable Gemini analysis, run:\n  python main_api.py\n\nThen click Analyze again.';toast('Backend offline — demo mode','info');}
+  finally{btn.disabled=false;}
+}
+function toggleRot(){S.autoRot=!S.autoRot;U3D.setRot(S.autoRot);document.getElementById('cb-rot').classList.toggle('on',S.autoRot);}
+function resetCam(){U3D.resetCam();}
+function toggleAllTraj(){S.showAllTraj=!S.showAllTraj;document.getElementById('cb-traj').classList.toggle('on',S.showAllTraj);if(S.showAllTraj&&S.trajectories.length){const cl=[0xffd700,0xb44dff,0x00c8ff,0xff6b35,0x00ff8c];S.trajectories.slice(0,5).forEach((t,i)=>setTimeout(()=>U3D.hlTraj(t.nodes,cl[i]),i*280));}else U3D.clearTL();}
+function toggleLbls(){S.showLbls=!S.showLbls;U3D.setLbls(S.showLbls);document.getElementById('cb-lbl').classList.toggle('on',S.showLbls);}
+function doZoom(d){U3D.zoom(d);}
+function syncCrit(src){const other=src==='criterion'?'crit-disp':'criterion';document.getElementById(other).value=document.getElementById(src).value;}
+
+// I. INIT
+window.addEventListener('DOMContentLoaded',()=>{
+  SpaceBG.init();Preview.init();
+  bindRange('bw','bw-v');bindRange('md','md-v');bindRange('tk','tk-v');bindRange('my','my-v');bindRange('mr','mr-v',2);
+  bindRange('nn-dem','nn-dem-v',2);bindRange('nn-sat','nn-sat-v',2);bindRange('ee-diff','ee-diff-v',2);bindRange('ee-risk','ee-risk-v',2);
+  document.getElementById('criterion').addEventListener('input',()=>syncCrit('criterion'));
+  document.getElementById('crit-disp').addEventListener('input',()=>syncCrit('crit-disp'));
+  setTimeout(async()=>{const ld=document.getElementById('loading');ld.classList.add('out');setTimeout(()=>ld.style.display='none',800);await loadDefault();},1800);
+});
+</script>
+</body>
+</html>
