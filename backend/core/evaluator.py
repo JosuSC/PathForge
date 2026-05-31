@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from core.graph import CareerGraph, Trajectory
+from backend.core.graph import CareerGraph, Trajectory
 
 
 # ---------------------------------------------------------------------------

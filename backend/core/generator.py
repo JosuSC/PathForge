@@ -26,9 +26,9 @@ from dataclasses import dataclass
 import numpy as np
 from loguru import logger
 
-from core.constraints import Constraint
-from core.evaluator import EvaluatedTrajectory, TrajectoryEvaluator
-from core.graph import CareerGraph, Trajectory
+from backend.core.constraints import Constraint
+from backend.core.evaluator import EvaluatedTrajectory, TrajectoryEvaluator
+from backend.core.graph import CareerGraph, Trajectory
 
 
 # ---------------------------------------------------------------------------

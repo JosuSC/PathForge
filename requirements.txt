@@ -1,12 +1,14 @@
-# LLM
+# LLM providers (instala los que uses)
 google-generativeai>=0.7.0
+anthropic>=0.25.0
+openai>=1.30.0
 
 # Data & algorithms
 networkx>=3.3
 numpy>=1.26
 pymoo>=0.6.1
 
-# Web framework (interfaz visual)
+# Web framework
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 websockets>=12.0

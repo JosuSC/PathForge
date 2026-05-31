@@ -1,19 +1,16 @@
 """
-main_api.py
------------
-Servidor FastAPI con WebSocket para PathForge.
-
-Endpoints:
-    GET  /api/graph          → Retorna el grafo completo (nodos + aristas)
-    POST /api/generate       → Genera trayectorias con configuración custom
-    WS   /ws/explore         → Stream en tiempo real del Beam Search
-    POST /api/analyze        → Análisis cualitativo con Gemini
+backend/main_api.py
+-------------------
+Servidor FastAPI + WebSocket para PathForge.
+Sirve el frontend estático y expone los endpoints de la API.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -24,24 +21,26 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from core.constraints import (
+from backend.core.constraints import (
     Constraint,
     ConstraintProfiles,
     MaxRiskConstraint,
     MaxYearsConstraint,
     MinSalaryConstraint,
 )
-from core.generator import GeneratorConfig, TrajectoryGenerator
-from core.graph import CareerGraph
-from data.loader import load_career_graph
-from llm.analyzer import TrajectoryAnalyzer
+from backend.core.generator import GeneratorConfig, TrajectoryGenerator
+from backend.core.graph import CareerGraph
+from backend.data.loader import load_career_graph
+from backend.llm.analyzer import TrajectoryAnalyzer
+from backend.llm.client import get_llm_client
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 # App setup
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="PathForge API", version="1.0.0")
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
+app = FastAPI(title="PathForge API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,12 +48,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Servir frontend estático
-app.mount("/static", StaticFiles(directory="../frontend"), name="static")
+# Servir archivos estáticos del frontend
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
-# ---------------------------------------------------------------------------
-# Estado global (cargado una vez al inicio)
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
+# Estado global
+# ──────────────────────────────────────────────────────────────
 
 _career_graph: CareerGraph | None = None
 
@@ -66,9 +66,9 @@ def get_graph() -> CareerGraph:
     return _career_graph
 
 
-# ---------------------------------------------------------------------------
-# Schemas de entrada/salida
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
+# Schemas
+# ──────────────────────────────────────────────────────────────
 
 class NodeInput(BaseModel):
     id: str
@@ -108,34 +108,28 @@ class AnalyzeRequest(BaseModel):
     user_profile: str = "profesional de tecnología"
 
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 # Helpers
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 
-def build_constraint(request: ExploreRequest) -> Constraint:
-    """Construye restricción combinada desde los parámetros del request."""
+def build_constraint(req: ExploreRequest) -> Constraint:
     profiles = {
         "conservative": ConstraintProfiles.conservative(),
         "ambitious":    ConstraintProfiles.ambitious(),
-        "balanced":     ConstraintProfiles.balanced(request.max_years),
+        "balanced":     ConstraintProfiles.balanced(req.max_years),
         "fast_track":   ConstraintProfiles.fast_track(),
     }
-    base = profiles.get(request.profile, ConstraintProfiles.balanced())
-    extra = MaxRiskConstraint(request.max_risk) & MaxYearsConstraint(request.max_years)
-    return base & extra
+    base = profiles.get(req.profile, ConstraintProfiles.balanced())
+    return base & MaxRiskConstraint(req.max_risk) & MaxYearsConstraint(req.max_years)
 
 
-def build_graph_from_request(request: ExploreRequest) -> CareerGraph:
-    """
-    Si el request incluye nodos/aristas personalizados, construye un grafo
-    desde ellos. Si no, usa el grafo por defecto.
-    """
-    if request.nodes and request.edges:
+def build_graph_from_request(req: ExploreRequest) -> CareerGraph:
+    if req.nodes and req.edges:
         import networkx as nx
         G = nx.DiGraph()
-        for n in request.nodes:
+        for n in req.nodes:
             G.add_node(n.id, **n.model_dump())
-        for e in request.edges:
+        for e in req.edges:
             G.add_edge(
                 e.from_node, e.to_node,
                 transition_years=e.transition_years,
@@ -146,37 +140,33 @@ def build_graph_from_request(request: ExploreRequest) -> CareerGraph:
     return get_graph()
 
 
-def trajectory_to_dict(et) -> dict:
-    """Serializa EvaluatedTrajectory a dict JSON-friendly."""
+def traj_to_dict(et) -> dict:
     return {
         "nodes": list(et.trajectory.nodes),
         "scores": et.scores,
         "pareto_rank": et.pareto_rank,
         "crowding_distance": (
-            et.crowding_distance
-            if et.crowding_distance != float("inf")
-            else 9999.0
+            et.crowding_distance if et.crowding_distance != float("inf") else 9999.0
         ),
     }
 
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 # REST Endpoints
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def serve_frontend():
-    return FileResponse("../frontend/index.html")
+    index = FRONTEND_DIR / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
+    return {"message": "PathForge API v2.0", "docs": "/docs"}
 
 
 @app.get("/api/graph")
 async def get_default_graph():
-    """Retorna el grafo por defecto como JSON para renderizar en 3D."""
     graph = get_graph()
-    nodes = [
-        {"id": nid, **graph.node_attrs(nid)}
-        for nid in graph.all_node_ids()
-    ]
+    nodes = [{"id": nid, **graph.node_attrs(nid)} for nid in graph.all_node_ids()]
     edges = [
         {"from": u, "to": v, **graph.edge_attrs(u, v)}
         for u, v in graph._g.edges()
@@ -184,31 +174,42 @@ async def get_default_graph():
     return {"nodes": nodes, "edges": edges}
 
 
+@app.get("/api/llm/status")
+async def llm_status():
+    """Estado de todas las API keys en la cola circular."""
+    try:
+        client = get_llm_client()
+        return {
+            "key_count": client.key_count,
+            "active_provider": client.active_provider,
+            "keys": client.status(),
+        }
+    except Exception as e:
+        return {"error": str(e), "key_count": 0}
+
+
 @app.post("/api/generate")
-async def generate_trajectories(request: ExploreRequest):
-    """Genera trayectorias de forma síncrona (sin animación)."""
-    graph = build_graph_from_request(request)
-    constraints = build_constraint(request)
+async def generate_trajectories(req: ExploreRequest):
+    graph = build_graph_from_request(req)
+    constraints = build_constraint(req)
     config = GeneratorConfig(
-        beam_width=request.beam_width,
-        max_depth=request.max_depth,
-        top_k_results=request.top_k,
+        beam_width=req.beam_width,
+        max_depth=req.max_depth,
+        top_k_results=req.top_k,
     )
     generator = TrajectoryGenerator(graph, config)
-    results = generator.generate(request.source, constraints)
-    return {"trajectories": [trajectory_to_dict(et) for et in results]}
+    results = generator.generate(req.source, constraints)
+    return {"trajectories": [traj_to_dict(et) for et in results]}
 
 
 @app.post("/api/analyze")
-async def analyze_trajectories(request: AnalyzeRequest):
-    """Análisis cualitativo con Gemini."""
+async def analyze_trajectories(req: AnalyzeRequest):
     try:
-        from core.evaluator import EvaluatedTrajectory
-        from core.graph import Trajectory
+        from backend.core.evaluator import EvaluatedTrajectory
+        from backend.core.graph import Trajectory
 
-        # Reconstruir objetos desde los dicts
         evaluated = []
-        for t in request.trajectories:
+        for t in req.trajectories:
             traj = Trajectory(nodes=tuple(t["nodes"]))
             et = EvaluatedTrajectory(
                 trajectory=traj,
@@ -218,70 +219,54 @@ async def analyze_trajectories(request: AnalyzeRequest):
             )
             evaluated.append(et)
 
-        analyzer = TrajectoryAnalyzer(user_profile=request.user_profile)
-        result = analyzer.rank_by(evaluated, request.criterion)
+        analyzer = TrajectoryAnalyzer(user_profile=req.user_profile)
+        result = analyzer.rank_by(evaluated, req.criterion)
 
         return {
             "analysis": result.content,
+            "provider_used": result.provider_used,
             "trajectories_analyzed": result.trajectories_analyzed,
         }
     except Exception as exc:
         logger.error(f"Error en análisis: {exc}")
-        return {"analysis": f"Error al consultar Gemini: {exc}", "trajectories_analyzed": 0}
+        return {"analysis": f"Error: {exc}", "trajectories_analyzed": 0}
 
 
-# ---------------------------------------------------------------------------
-# WebSocket — Stream del Beam Search en tiempo real
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
+# WebSocket
+# ──────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/explore")
 async def websocket_explore(websocket: WebSocket):
-    """
-    WebSocket que emite cada paso del Beam Search en tiempo real.
-
-    Protocolo:
-        Cliente → {"type": "start", "data": ExploreRequest}
-        Servidor → {"type": "step", "depth": N, "beam": [...], "completed": [...]}
-        Servidor → {"type": "result", "trajectories": [...]}
-        Servidor → {"type": "done"}
-    """
     await websocket.accept()
     logger.info("WebSocket conectado")
-
     try:
         raw = await websocket.receive_text()
         message = json.loads(raw)
-
         if message.get("type") != "start":
             await websocket.send_json({"type": "error", "msg": "Esperaba type=start"})
             return
 
-        request = ExploreRequest(**message["data"])
-        graph = build_graph_from_request(request)
-        constraints = build_constraint(request)
-
+        req = ExploreRequest(**message["data"])
+        graph = build_graph_from_request(req)
+        constraints = build_constraint(req)
         config = GeneratorConfig(
-            beam_width=request.beam_width,
-            max_depth=request.max_depth,
-            top_k_results=request.top_k,
+            beam_width=req.beam_width,
+            max_depth=req.max_depth,
+            top_k_results=req.top_k,
             emit_steps=True,
         )
-
         generator = TrajectoryGenerator(graph, config)
-        results_holder: list = []
+        loop = asyncio.get_event_loop()
 
         async def emit_step(depth: int, beam: list, completed: list):
-            """Callback async que emite cada paso del beam al cliente."""
             await websocket.send_json({
                 "type": "step",
                 "depth": depth,
                 "beam": [list(p) for p in beam],
-                "completed": [list(p) for p in completed[-20:]],  # últimas 20
+                "completed": [list(p) for p in completed[-20:]],
             })
-            await asyncio.sleep(0.05)  # pausa visual para la animación
-
-        # Ejecutar en thread separado para no bloquear el event loop
-        loop = asyncio.get_event_loop()
+            await asyncio.sleep(0.04)
 
         def sync_callback(depth, beam, completed):
             asyncio.run_coroutine_threadsafe(
@@ -291,16 +276,15 @@ async def websocket_explore(websocket: WebSocket):
         results = await loop.run_in_executor(
             None,
             lambda: generator.generate(
-                source=request.source,
+                source=req.source,
                 constraints=constraints,
                 step_callback=sync_callback,
             ),
         )
 
-        # Enviar resultados finales
         await websocket.send_json({
             "type": "result",
-            "trajectories": [trajectory_to_dict(et) for et in results],
+            "trajectories": [traj_to_dict(et) for et in results],
         })
         await websocket.send_json({"type": "done"})
 
@@ -308,12 +292,18 @@ async def websocket_explore(websocket: WebSocket):
         logger.info("WebSocket desconectado")
     except Exception as exc:
         logger.error(f"WebSocket error: {exc}")
-        await websocket.send_json({"type": "error", "msg": str(exc)})
+        try:
+            await websocket.send_json({"type": "error", "msg": str(exc)})
+        except Exception:
+            pass
 
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 # Entry point
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    uvicorn.run("main_api:app", host="0.0.0.0", port=8000, reload=True)
+    import os
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("backend.main_api:app", host=host, port=port, reload=True)

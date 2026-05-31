@@ -12,7 +12,7 @@ Principios de prompt engineering aplicados:
 
 from __future__ import annotations
 
-from core.evaluator import EvaluatedTrajectory
+from backend.core.evaluator import EvaluatedTrajectory
 
 
 def build_comparison_prompt(

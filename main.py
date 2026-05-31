@@ -24,11 +24,11 @@ from rich.table import Table
 from rich.text import Text
 from rich import print as rprint
 
-from core.constraints import ConstraintProfiles, Constraint
-from core.generator import GeneratorConfig, TrajectoryGenerator
-from core.graph import CareerGraph
-from data.loader import load_career_graph
-from llm.analyzer import TrajectoryAnalyzer
+from backend.core.constraints import ConstraintProfiles, Constraint
+from backend.core.generator import GeneratorConfig, TrajectoryGenerator
+from backend.core.graph import CareerGraph
+from backend.data.loader import load_career_graph
+from backend.llm.analyzer import TrajectoryAnalyzer
 
 console = Console()
 
