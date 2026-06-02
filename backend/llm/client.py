@@ -41,6 +41,7 @@ class Provider(str, Enum):
     GEMINI = "gemini"
     CLAUDE = "claude"
     OPENAI = "openai"
+    OPENROUTER = "openrouter"
 
 
 @dataclass
@@ -129,18 +130,34 @@ def _load_keys_from_env() -> list[LLMKey]:
 # ──────────────────────────────────────────────────────────────
 
 def _call_gemini(key: str, prompt: str, model: str) -> str:
-    """Llama a la API de Gemini y retorna el texto."""
-    import google.generativeai as genai
-    genai.configure(api_key=key)
-    m = genai.GenerativeModel(
-        model_name=model,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.3,
-            max_output_tokens=1024,
-        ),
-    )
-    response = m.generate_content(prompt)
-    return response.text.strip()
+    """Llama a Gemini priorizando google.genai y manteniendo fallback legacy."""
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=key)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config={
+                "temperature": 0.3,
+                "max_output_tokens": 1024,
+            },
+        )
+        return (response.text or "").strip()
+    except ImportError:
+        # Fallback para entornos con la librería legacy instalada.
+        import google.generativeai as genai
+
+        genai.configure(api_key=key)
+        m = genai.GenerativeModel(
+            model_name=model,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=1024,
+            ),
+        )
+        response = m.generate_content(prompt)
+        return response.text.strip()
 
 
 def _call_claude(key: str, prompt: str, model: str) -> str:
@@ -168,11 +185,28 @@ def _call_openai(key: str, prompt: str, model: str) -> str:
     return response.choices[0].message.content.strip()
 
 
+def _call_openrouter(key: str, prompt: str, model: str) -> str:
+    """Llama a la API de OpenRouter (compatible con OpenAI) y retorna el texto."""
+    import openai
+    client = openai.OpenAI(
+        api_key=key,
+        base_url="https://openrouter.ai/api/v1",
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip()
+
+
 # Mapa proveedor → función adaptadora
 _PROVIDER_CALLERS: dict[Provider, Callable] = {
     Provider.GEMINI: _call_gemini,
     Provider.CLAUDE: _call_claude,
     Provider.OPENAI: _call_openai,
+    Provider.OPENROUTER: _call_openrouter,
 }
 
 # Modelos por defecto
@@ -180,6 +214,7 @@ _DEFAULT_MODELS: dict[Provider, str] = {
     Provider.GEMINI: "gemini-1.5-flash",
     Provider.CLAUDE: "claude-haiku-4-5-20251001",
     Provider.OPENAI: "gpt-4o-mini",
+    Provider.OPENROUTER: "openrouter/auto",
 }
 
 # Errores que indican quota/rate-limit (rotar key) vs errores fatales

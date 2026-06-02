@@ -48,8 +48,11 @@ class CareerGraph:
     del dominio de trayectorias profesionales.
     """
 
-    def __init__(self, graph: nx.DiGraph) -> None:
+    def __init__(self, graph: nx.DiGraph, outcome_predictor=None) -> None:
+        # outcome_predictor se acepta por compatibilidad con versiones previas.
+        # El scoring actual vive en evaluator/scorer y no depende de este atributo.
         self._g = graph
+        self._outcome_predictor = outcome_predictor
         self._validate()
 
     # ------------------------------------------------------------------
@@ -92,6 +95,10 @@ class CareerGraph:
 
     def all_node_ids(self) -> list[str]:
         return list(self._g.nodes())
+
+    def terminal_nodes(self) -> list[str]:
+        """Retorna nodos terminales (sin aristas salientes)."""
+        return [n for n in self._g.nodes() if self._g.out_degree(n) == 0]
 
     # ------------------------------------------------------------------
     # Scoring de trayectorias

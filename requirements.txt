@@ -1,12 +1,17 @@
-# LLM providers (instala los que uses)
+# LLM providers
 google-generativeai>=0.7.0
 anthropic>=0.25.0
 openai>=1.30.0
+
+# Machine Learning (sklearn)
+scikit-learn>=1.4.0
+joblib>=1.3.0
 
 # Data & algorithms
 networkx>=3.3
 numpy>=1.26
 pymoo>=0.6.1
+pandas>=2.2.0
 
 # Web framework
 fastapi>=0.111.0
