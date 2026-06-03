@@ -640,7 +640,8 @@ body {
    VIEW 2 — UNIVERSE 3D
 ══════════════════════════════════ */
 #view-universe {
-    position: relative
+    position: absolute;
+    inset: 0;
 }
 
 #three-canvas {

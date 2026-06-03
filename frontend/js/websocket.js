@@ -89,17 +89,31 @@ const API = (() => {
      */
     function exploreWSRaw(request, onMessage, onError) {
         let ws;
+        let heartbeatTimer = null;
+        let heartbeatTimeout = null;
+        let missedHeartbeats = 0;
+        const MAX_MISSED = 3;
+        const HEARTBEAT_INTERVAL = 25000; // 25s, menor que timeout de proxies
+
         try {
             ws = new WebSocket(`${WS_BASE}/ws/explore`);
 
             ws.onopen = () => {
                 console.log('WS connected, sending request...');
+                missedHeartbeats = 0;
+                startHeartbeat();
                 ws.send(JSON.stringify({ type: 'start', data: request }));
             };
 
             ws.onmessage = e => {
+                missedHeartbeats = 0;
+                resetHeartbeatTimeout();
                 try {
                     const msg = JSON.parse(e.data);
+                    if (msg.type === 'pong') {
+                        console.log('WS pong received');
+                        return;
+                    }
                     console.log('WS message:', msg.type);
                     onMessage(msg);
                 } catch (parseErr) {
@@ -109,13 +123,60 @@ const API = (() => {
 
             ws.onerror = (ev) => {
                 console.error('WS error:', ev);
-                onError('WebSocket error. Check backend connection.');
+                // No llamamos onError aquí, onclose se dispara después
             };
 
             ws.onclose = e => {
                 console.log('WS closed:', e.code, e.reason);
-                if (e.code !== 1000) onError(`WS closed unexpectedly (code ${e.code})`);
+                stopHeartbeat();
+                if (e.code === 1000) {
+                    console.log('WS closed normally');
+                } else if (e.code === 1006) {
+                    console.warn('WS closed unexpectedly (code 1006)');
+                    onError(`WS closed unexpectedly (code ${e.code})`);
+                } else {
+                    onError(`WS closed unexpectedly (code ${e.code})`);
+                }
             };
+
+            // Heartbeat para mantener la conexion viva
+            function startHeartbeat() {
+                stopHeartbeat();
+                heartbeatTimer = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        missedHeartbeats++;
+                        if (missedHeartbeats > MAX_MISSED) {
+                            console.warn(`WS: ${missedHeartbeats} heartbeats sin respuesta`);
+                            ws.close(4000, 'Heartbeat timeout');
+                            return;
+                        }
+                        try {
+                            ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+                            console.log('WS ping sent');
+                        } catch (err) {
+                            console.warn('WS: error enviando ping', err);
+                        }
+                        heartbeatTimeout = setTimeout(() => {
+                            console.warn('WS: ping sin respuesta (timeout)');
+                        }, 10000);
+                    }
+                }, HEARTBEAT_INTERVAL);
+            }
+
+            function resetHeartbeatTimeout() {
+                if (heartbeatTimeout) {
+                    clearTimeout(heartbeatTimeout);
+                    heartbeatTimeout = null;
+                }
+            }
+
+            function stopHeartbeat() {
+                if (heartbeatTimer) {
+                    clearInterval(heartbeatTimer);
+                    heartbeatTimer = null;
+                }
+                resetHeartbeatTimeout();
+            }
 
         } catch (e) {
             console.error('WS creation error:', e);

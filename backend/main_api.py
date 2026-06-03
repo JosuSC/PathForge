@@ -416,18 +416,69 @@ async def delete_input(input_id: str):
 
 # ──────────────────────────────────────────────────────────────
 # WebSocket — stream enriquecido del Beam Search
+# Fix: cierre limpio (evita code 1006), heartbeat, timeouts
 # ──────────────────────────────────────────────────────────────
+
+WS_HEARTBEAT_INTERVAL = 25  # segundos entre pings del servidor
+WS_CLIENT_TIMEOUT     = 120 # segundos sin mensaje del cliente
+
+
+async def _ws_heartbeat(websocket: WebSocket):
+    """Envia pings periodicos para mantener la conexion viva."""
+    try:
+        while True:
+            await asyncio.sleep(WS_HEARTBEAT_INTERVAL)
+            try:
+                import time
+                await websocket.send_json({"type": "ping", "timestamp": int(time.time() * 1000)})
+            except Exception:
+                break
+    except asyncio.CancelledError:
+        pass
+
+
+async def _ws_send_safe(websocket: WebSocket, data: dict):
+    """Envia JSON capturando errores de conexion cerrada."""
+    try:
+        await websocket.send_json(data)
+    except Exception as e:
+        logger.warning(f"WS: error enviando mensaje ({e})")
+
+
+async def _ws_close_clean(websocket: WebSocket, code: int, reason: str):
+    """Cierra el WS con un close frame valido. Sin esto el cliente recibe 1006."""
+    try:
+        await websocket.close(code=code, reason=reason[:120])
+    except Exception:
+        pass
 
 @app.websocket("/ws/explore")
 async def websocket_explore(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket conectado")
 
+    heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
+
     try:
-        raw     = await websocket.receive_text()
+        # Leer mensaje inicial con timeout
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=WS_CLIENT_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("WS: timeout esperando mensaje del cliente")
+            await _ws_close_clean(websocket, 1000, "Client timeout")
+            return
+
         message = json.loads(raw)
+
+        # Si el cliente manda ping primero, respondemos y seguimos
+        if message.get("type") == "ping":
+            await websocket.send_json({"type": "pong", "timestamp": message.get("timestamp")})
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=WS_CLIENT_TIMEOUT)
+            message = json.loads(raw)
+
         if message.get("type") != "start":
             await websocket.send_json({"type": "error", "msg": "Esperaba type=start"})
+            await _ws_close_clean(websocket, 1000, "Protocol error")
             return
 
         req         = ExploreRequest(**message["data"])
@@ -440,8 +491,8 @@ async def websocket_explore(websocket: WebSocket):
         generator = TrajectoryGenerator(graph, config)
         loop      = asyncio.get_event_loop()
 
-        # Emitir información del grafo al inicio
-        await websocket.send_json({
+        # Emitir informacion del grafo al inicio
+        await _ws_send_safe(websocket, {
             "type":      "graph_info",
             "nodes":     [{"id": nid, **graph.node_attrs(nid)} for nid in graph.all_node_ids()],
             "edges":     [{"from": u, "to": v, **graph.edge_attrs(u, v)} for u, v in graph._g.edges()],
@@ -449,14 +500,47 @@ async def websocket_explore(websocket: WebSocket):
             "source":    req.source,
         })
 
+                # Rastrear nodos y aristas descubiertos para enviarlos en cada step
+        discovered_nodes = {req.source}
+        discovered_edges = set()
+        terminal_set = set(graph.terminal_nodes())
+
         async def emit_step(depth: int, beam: list, completed: list):
-            await websocket.send_json({
+            # Detectar nodos nuevos en este step
+            new_nodes = []
+            for path in beam:
+                for node_id in path:
+                    if node_id not in discovered_nodes:
+                        discovered_nodes.add(node_id)
+                        new_nodes.append(node_id)
+
+            # Detectar aristas nuevas en este step
+            new_edges = []
+            for path in beam:
+                for i in range(len(path) - 1):
+                    edge_key = (path[i], path[i + 1])
+                    if edge_key not in discovered_edges:
+                        discovered_edges.add(edge_key)
+                        new_edges.append([path[i], path[i + 1]])
+
+            # Verificar si se alcanzo un nodo terminal
+            terminal_reached = ""
+            for node_id in new_nodes:
+                if node_id in terminal_set:
+                    terminal_reached = node_id
+                    break
+
+            await _ws_send_safe(websocket, {
                 "type": "step",
                 "depth": depth,
                 "beam": [list(p) for p in beam],
                 "completed": [list(p) for p in completed],
+                "new_nodes": new_nodes,
+                "new_edges": new_edges,
+                "terminal_reached": terminal_reached,
+                "total_discovered": len(discovered_nodes),
             })
-            await asyncio.sleep(0.06)  # pausa para animación fluida
+            await asyncio.sleep(0.06)
 
         def sync_callback(depth: int, beam: list, completed: list):
             asyncio.run_coroutine_threadsafe(emit_step(depth, beam, completed), loop)
@@ -472,22 +556,29 @@ async def websocket_explore(websocket: WebSocket):
 
         groups = _group_by_terminal(results)
 
-        await websocket.send_json({
+        await _ws_send_safe(websocket, {
             "type":            "result",
             "trajectories":    [traj_to_dict(et) for et in results],
             "terminal_groups": {k: [traj_to_dict(et) for et in v] for k, v in groups.items()},
             "terminals_found": list(groups.keys()),
         })
-        await websocket.send_json({"type": "done"})
+        await _ws_send_safe(websocket, {"type": "done"})
+
+        # CIERRE LIMPIO - esto es lo que faltaba, causaba el code 1006
+        await _ws_close_clean(websocket, 1000, "Exploration complete")
 
     except WebSocketDisconnect:
-        logger.info("WebSocket desconectado")
+        logger.info("WebSocket desconectado por el cliente")
     except Exception as exc:
         logger.error(f"WebSocket error: {exc}")
         try:
             await websocket.send_json({"type": "error", "msg": str(exc)})
         except Exception:
             pass
+        await _ws_close_clean(websocket, 1011, f"Server error: {exc}")
+    finally:
+        heartbeat_task.cancel()
+        logger.info("WebSocket sesion terminada")
 
 
 if __name__ == "__main__":

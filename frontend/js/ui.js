@@ -102,8 +102,8 @@ function renderEdgeList() {
     });
 }
 
-// ── View switching ────────────────────────────────────────────
-function switchView(name) {
+// ── View switching (with safe canvas size wait) ─────────────
+async function switchView(name) {
     AppState.currentView = name;
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.getElementById(`view-${name}`).classList.add('active');
@@ -111,21 +111,40 @@ function switchView(name) {
     document.getElementById(`tab-${name}`).classList.add('active');
 
     if (name === 'universe') {
-        // ✅ FIX: Usar requestAnimationFrame para asegurar dimensiones
-        requestAnimationFrame(() => {
-            if (!U3D._init) {
-                U3D.init();
-                U3D._init = true;
-            } else {
-                // ✅ FIX: Si ya estaba inicializado, forzar resize
-                U3D.resize();
-            }
-            // Reconstruir si hay datos pero no estamos explorando
-            if (AppState.nodes.length && !AppState.exploring) {
-                U3D.rebuildAll();
-            }
-        });
+        // Esperar a que el contenedor tenga dimensiones reales antes de inicializar
+        await waitForCanvasSize();
+        U3D.init();   // idempotente: si ya existe, solo hace resize
+        if (AppState.nodes.length && !AppState.exploring) {
+            U3D.rebuildAll();
+        }
     }
+}
+
+/**
+ * Espera hasta que #three-canvas (o su padre) tenga ancho y alto > 0.
+ * Retorna una promesa que se resuelve cuando está listo.
+ */
+function waitForCanvasSize(retries = 80, interval = 50) {
+    return new Promise((resolve, reject) => {
+        let attempts = 0;
+        const check = () => {
+            const cv = document.getElementById('three-canvas');
+            if (cv) {
+                const parent = cv.parentElement;
+                if (parent && parent.clientWidth > 0 && parent.clientHeight > 0) {
+                    resolve();
+                    return;
+                }
+            }
+            attempts++;
+            if (attempts >= retries) {
+                reject(new Error('Canvas parent never got size'));
+                return;
+            }
+            setTimeout(check, interval);
+        };
+        check();
+    });
 }
 
 // ── Modals ────────────────────────────────────────────────────
@@ -214,8 +233,8 @@ async function loadDefault() {
     toast('Default career graph loaded', 'ok');
 }
 
-// ── Exploration ───────────────────────────────────────────────
-function launchExploration() {
+// ── Exploration (asíncrona, espera que la vista esté lista) ──
+async function launchExploration() {
     const src = document.getElementById('src-sel').value;
     if (!src) { toast('Select a starting role first', 'err'); return; }
     if (AppState.nodes.length < 2) { toast('Add at least 2 nodes', 'err'); return; }
@@ -224,22 +243,12 @@ function launchExploration() {
     document.getElementById('launch-btn').disabled = true;
     toast('Launching exploration...', 'info');
 
-    // ✅ FIX: Primero cambiar de vista
-    switchView('universe');
+    // Cambiar a la vista universe y esperar a que el canvas esté listo
+    await switchView('universe');
 
-    // ✅ FIX: Usar requestAnimationFrame encadenado para asegurar init correcto
-    requestAnimationFrame(() => {
-        if (!U3D._init) {
-            U3D.init();
-            U3D._init = true;
-        }
-        // Asegurar resize después del primer frame
-        requestAnimationFrame(() => {
-            U3D.resize();
-            U3D.showSourceNode(src, []);
-            requestAnimationFrame(() => _startSearch());
-        });
-    });
+    // Ahora la escena 3D ya está inicializada correctamente
+    U3D.showSourceNode(src, []);
+    _startSearch();
 }
 
 function _startSearch() {
@@ -277,6 +286,7 @@ function _startSearch() {
     function onGraphInfo(msg) {
         U3D.setTerminals(msg.terminals || []);
         U3D.showSourceNode(msg.source, msg.terminals || []);
+        U3D.rebuildAll();
         toast(`Graph loaded: ${msg.nodes.length} nodes, ${(msg.terminals || []).length} terminals`, 'info');
     }
 
@@ -313,6 +323,7 @@ function _startSearch() {
     }
 
     function onDone() {
+        explorationComplete = true;
         AppState.exploring = false;
         document.getElementById('launch-btn').disabled = false;
         overlay.classList.remove('show');
@@ -345,8 +356,15 @@ function _startSearch() {
         }, 1200);
     }
 
+    let explorationComplete = false;
+
     function onError(msg) {
+        if (explorationComplete) {
+            console.warn('WS closed after completion, ignoring:', msg);
+            return;
+        }
         console.warn('WS error, fallback to demo:', msg);
+        toast('Backend unreachable - switching to demo mode', 'info');
         _runDemoExploration(request, onStep, onResult, onDone);
     }
 

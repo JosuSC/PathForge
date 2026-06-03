@@ -22,6 +22,9 @@ const U3D = (() => {
     let t3 = 0;
     let terminalNodes = new Set();
     let sourceNodeId = null;
+    let _initialized = false;
+    let _initRetries = 0;
+    const MAX_INIT_RETRIES = 30;
 
     const PAL = [
         0x00c8ff, 0xb44dff, 0xffc843, 0xff6b35, 0x00ff8c, 0xff3355,
@@ -31,12 +34,23 @@ const U3D = (() => {
 
     // ── Init ──────────────────────────────────────────────────
     function init() {
+        if (_initialized) { resize(); return; }
+
         const cv = document.getElementById('three-canvas');
         if (!cv) { console.error('❌ three-canvas not found'); return; }
 
-        // ✅ FIX: Esperar a que el canvas tenga dimensiones válidas
-        if (cv.clientWidth === 0 || cv.clientHeight === 0) {
-            console.warn('⚠️ Canvas has 0 dimensions, retrying in 100ms...');
+        const parent = cv.parentElement;
+        if (parent) void parent.offsetHeight;
+
+        const pw = parent ? parent.clientWidth : cv.clientWidth;
+        const ph = parent ? parent.clientHeight : cv.clientHeight;
+        if (pw === 0 || ph === 0) {
+            _initRetries++;
+            if (_initRetries > MAX_INIT_RETRIES) {
+                console.error('❌ Canvas still 0x0 after ' + MAX_INIT_RETRIES + ' retries. Check #view-universe CSS (needs position:absolute;inset:0)');
+                return;
+            }
+            console.warn('⚠️ Canvas parent 0x0, retry ' + _initRetries + '/' + MAX_INIT_RETRIES + '...');
             setTimeout(() => init(), 100);
             return;
         }
@@ -44,16 +58,16 @@ const U3D = (() => {
         scene = new THREE.Scene();
         scene.fog = new THREE.FogExp2(0x00000a, 0.006);
 
-        camera = new THREE.PerspectiveCamera(55, cv.clientWidth / cv.clientHeight, 0.1, 800);
+        camera = new THREE.PerspectiveCamera(55, pw / ph, 0.1, 800);
         _updCam();
 
         try {
             renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: false });
-            renderer.setSize(cv.clientWidth, cv.clientHeight);
+            renderer.setSize(pw, ph);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
             renderer.toneMapping = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.1;
-            console.log('✅ WebGLRenderer created:', cv.clientWidth, 'x', cv.clientHeight);
+            console.log('✅ WebGLRenderer created:', pw, 'x', ph);
         } catch (e) {
             console.error('❌ WebGLRenderer failed:', e);
             return;
@@ -80,23 +94,28 @@ const U3D = (() => {
         cv.addEventListener('wheel', e => { radius = Math.max(8, Math.min(70, radius + e.deltaY * 0.04)); });
         window.addEventListener('resize', _onResize);
 
-        // ✅ FIX: ResizeObserver para detectar cambios de tamaño del contenedor
         if (typeof ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(() => _onResize());
             ro.observe(cv);
         }
 
+        _initialized = true;
+        _initRetries = 0;
         _animate();
-        console.log('✅ U3D initialized successfully');
+        console.log('✅ U3D initialized (' + pw + '×' + ph + ')');
     }
 
-    // ✅ FIX: Función resize() exportable para forzar redimensionamiento
+
+    // resize() exportable para forzar redimensionamiento
     function resize() {
         if (!renderer || !camera) return;
         const cv = renderer.domElement;
-        if (cv.clientWidth === 0 || cv.clientHeight === 0) return;
-        renderer.setSize(cv.clientWidth, cv.clientHeight);
-        camera.aspect = cv.clientWidth / cv.clientHeight;
+        const parent = cv.parentElement;
+        const w = parent ? parent.clientWidth : cv.clientWidth;
+        const h = parent ? parent.clientHeight : cv.clientHeight;
+        if (w === 0 || h === 0) return;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
         camera.updateProjectionMatrix();
     }
 
@@ -501,7 +520,7 @@ const U3D = (() => {
 
     return {
         init,
-        resize,  // ✅ FIX: Nueva función exportada
+        resize,
         clearGraph,
         showSourceNode,
         onBeamStep,
