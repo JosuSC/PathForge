@@ -37,5 +37,7 @@ frontend/out/
 frontend/.env.local
 
 # Data
-backend/data/raw
-backend/data/problems
+backend/data/raw/*
+!backend/data/raw/.gitkeep
+backend/data/problems/*
+!backend/data/problems/.gitkeep
