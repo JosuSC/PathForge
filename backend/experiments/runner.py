@@ -179,7 +179,7 @@ def run_all_experiments(
     # Guardar resultados en JSON (FIX [R4]: mismo RESULTS_DIR)
     output_path = RESULTS_DIR / "experiment_results.json"
     data        = [m.to_dict() for m in all_metrics]
-    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.success(
         f"Resultados guardados en {output_path} "
         f"({len(all_metrics)}/{total} experimentos completados)"

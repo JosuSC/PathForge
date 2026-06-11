@@ -273,7 +273,7 @@ def run_experiments(instances_path: Path, results_path: Path) -> None:
     # JSON para visualizer.py (FIX [RE3]: formato compatible con runner.py)
     json_path = RESULTS_DIR / "run_experiments_results.json"
     json_data = [asdict(r) for r in all_results]
-    json_path.write_text(json.dumps(json_data, indent=2, ensure_ascii=False))
+    json_path.write_text(json.dumps(json_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     logger.success(
         f"Completado. {len(all_results)} registros guardados en:\n"

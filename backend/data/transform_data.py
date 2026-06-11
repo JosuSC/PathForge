@@ -970,7 +970,7 @@ def main():
 
         if success:
             problems_created += 1
-            with open(PROBLEMS_DIR / domain / "graph.json") as f:
+            with open(PROBLEMS_DIR / domain / "graph.json", encoding="utf-8") as f:
                 graph = json.load(f)
             instances = generate_instances(domain, graph["nodes"], graph["edges"])
 
@@ -1002,7 +1002,7 @@ def main():
     for kd in key_domains:
         domain_dir = PROBLEMS_DIR / kd
         if domain_dir.exists():
-            with open(domain_dir / "graph.json") as f:
+            with open(domain_dir / "graph.json", encoding="utf-8") as f:
                 g = json.load(f)
             print(f"  {kd:30s}: {len(g['nodes']):3d} nodos, {len(g['edges']):4d} aristas ✓")
         else:

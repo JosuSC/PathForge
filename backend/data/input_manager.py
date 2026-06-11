@@ -240,7 +240,7 @@ class InputManager:
             "exported_at": datetime.now().isoformat(),
             "inputs": [inp.to_dict() for inp in inputs],
         }
-        Path(output_path).write_text(json.dumps(data, indent=2))
+        Path(output_path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         logger.success(f"Inputs exportados a {output_path}")
 
     def import_from_json(self, input_path: str) -> None:
@@ -254,7 +254,7 @@ class InputManager:
 
 # ──────────────────────────────────────────────────────────────
 # Presets por defecto
-# FIX [07]: domain_id=None explícito — estos presets son específicos del grafo
+#           domain_id=None explícito — estos presets son específicos del grafo
 #           default (careers.json). Para domain graphs, crea tus propios inputs
 #           con el domain_id correspondiente.
 # ──────────────────────────────────────────────────────────────
