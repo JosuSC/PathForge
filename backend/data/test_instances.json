@@ -1,0 +1,148 @@
+{
+    "instances": [
+        {
+            "id": "inst_001",
+            "source_career": "junior_dev",
+            "profile": "conservative",
+            "max_years": 4,
+            "max_risk": 0.2,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Recién egresado, prioriza estabilidad y bajo riesgo"
+        },
+        {
+            "id": "inst_002",
+            "source_career": "data_scientist",
+            "profile": "ambitious",
+            "max_years": 6,
+            "max_risk": 0.6,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Científico de datos con ambición de crecimiento salarial rápido"
+        },
+        {
+            "id": "inst_003",
+            "source_career": "ml_engineer",
+            "profile": "balanced",
+            "max_years": 5,
+            "max_risk": 0.4,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "ML Engineer que busca un camino equilibrado"
+        },
+        {
+            "id": "inst_004",
+            "source_career": "senior_dev",
+            "profile": "fast_track",
+            "max_years": 3,
+            "max_risk": 0.7,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Senior developer que quiere ascender rápido a arquitecto o líder"
+        },
+        {
+            "id": "inst_005",
+            "source_career": "engineering_manager",
+            "profile": "conservative",
+            "max_years": 5,
+            "max_risk": 0.15,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Engineering Manager con perfil conservador"
+        },
+        {
+            "id": "inst_006",
+            "source_career": "product_manager",
+            "profile": "ambitious",
+            "max_years": 7,
+            "max_risk": 0.5,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Product manager que busca maximizar salario"
+        },
+        {
+            "id": "inst_007",
+            "source_career": "devops_engineer",
+            "profile": "balanced",
+            "max_years": 6,
+            "max_risk": 0.35,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "DevOps que busca equilibrio entre aprendizaje y estabilidad"
+        },
+        {
+            "id": "inst_008",
+            "source_career": "tech_lead",
+            "profile": "fast_track",
+            "max_years": 4,
+            "max_risk": 0.65,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Tech Lead con ambición de llegar a C-level"
+        },
+        {
+            "id": "inst_009",
+            "source_career": "mid_dev",
+            "profile": "conservative",
+            "max_years": 8,
+            "max_risk": 0.25,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Mid-level developer que planea a largo plazo con bajo riesgo"
+        },
+        {
+            "id": "inst_010",
+            "source_career": "freelancer",
+            "profile": "ambitious",
+            "max_years": 5,
+            "max_risk": 0.55,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Freelancer que busca maximizar ingreso y retorno"
+        },
+        {
+            "id": "inst_011",
+            "source_career": "cto",
+            "profile": "balanced",
+            "max_years": 6,
+            "max_risk": 0.4,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "CTO consolidado, busca proyectos o fundar startup"
+        },
+        {
+            "id": "inst_012",
+            "source_career": "startup_founder",
+            "profile": "fast_track",
+            "max_years": 5,
+            "max_risk": 0.2,
+            "beam_width": 5,
+            "max_depth": 6,
+            "top_k": 3,
+            "use_simulation": true,
+            "user_profile_description": "Fundador de startup, busca crecimiento con riesgo moderado"
+        }
+    ]
+}

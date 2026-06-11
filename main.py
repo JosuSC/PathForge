@@ -1,22 +1,22 @@
 """
 main.py
 -------
-Punto de entrada de PathForge — CLI mejorada con comandos separados.
+Punto de entrada de PathForge — CLI con comandos separados.
 
 Comandos:
-    python main.py train                 # Entrenar modelos de IA
+    python main.py train                              # Entrenar modelos de IA
     python main.py run --input preset_junior_conservative
-    python main.py server                # Iniciar servidor FastAPI
-    python main.py input create          # Crear nueva entrada
-    python main.py input list            # Listar todas las entradas
-    python main.py input load <id>       # Cargar y explorar entrada
+    python main.py server                             # Iniciar servidor FastAPI
+    python main.py input list                         # Listar entradas guardadas
+    python main.py input create                       # Crear nueva entrada
+    python main.py input load <id>                    # Cargar y explorar entrada
+    python main.py input delete <id>                  # Eliminar entrada
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-import subprocess
 from pathlib import Path
 
 from rich.console import Console
@@ -24,9 +24,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
-from rich import print as rprint
 
-from backend.core.constraints import ConstraintProfiles, Constraint
+from backend.core.constraints import ConstraintProfiles
 from backend.core.generator import GeneratorConfig, TrajectoryGenerator
 from backend.core.graph import CareerGraph
 from backend.core.scorer import CareerOutcomePredictor
@@ -35,10 +34,6 @@ from backend.data.input_manager import InputManager, UserInput, create_default_p
 from backend.llm.analyzer import TrajectoryAnalyzer
 
 console = Console()
-
-# ────────────────────────────────────────────────────────────────
-# Configuración
-# ────────────────────────────────────────────────────────────────
 
 BANNER = r"""
 ████████████████████████████████████████████████████████████████████████████
@@ -63,7 +58,7 @@ PROFILE_DESCRIPTIONS = {
 
 def _resolve_source_node(raw_source: str, graph: CareerGraph) -> str:
     """Acepta ID exacto o label human-friendly y devuelve el node_id real."""
-    source = raw_source.strip()
+    source   = raw_source.strip()
     node_ids = set(graph.all_node_ids())
     if source in node_ids:
         return source
@@ -74,60 +69,76 @@ def _resolve_source_node(raw_source: str, graph: CareerGraph) -> str:
         if normalized == label:
             return nid
 
+    # FIX [M3]: mostrar labels disponibles en el error para ayudar al usuario
+    available = sorted(
+        f"{nid} ({graph.node_attrs(nid).get('label', nid)})"
+        for nid in graph.all_node_ids()
+    )
     raise ValueError(
-        f"Carrera inicial '{raw_source}' no existe. Usa un ID válido como: "
-        f"{', '.join(sorted(graph.all_node_ids())[:6])}..."
+        f"Carrera inicial '{raw_source}' no existe.\n"
+        f"Opciones disponibles:\n  " + "\n  ".join(available)
     )
 
 
 # ────────────────────────────────────────────────────────────────
-# COMANDO 1: train — Entrenar modelos de IA
+# COMANDO 1: train
 # ────────────────────────────────────────────────────────────────
 
 def cmd_train():
-    """Entrena los modelos de IA (sklearn + LLM)."""
+    """Entrena el predictor ML y valida la configuración LLM."""
     console.print(Panel(
         "[bold cyan]Entrenando modelos de IA...[/bold cyan]\n"
-        "[dim]Esto incluye: predictor de resultados (sklearn), carga de grafo y configuración de LLM[/dim]",
+        "[dim]Predictor sklearn + validación de claves LLM[/dim]",
         border_style="cyan", title="🎓 ENTRENAMIENTO"
     ))
-
-    from backend.core.scorer import CareerOutcomePredictor
-    from backend.data.loader import load_career_graph
 
     try:
         console.print("[yellow]» Cargando grafo profesional...[/yellow]")
         G = load_career_graph()
-        console.print(f"[green]✓ Grafo cargado: {len(G.nodes)} nodos, {len(G.edges)} aristas[/green]")
+        console.print(f"[green]✓ Grafo: {len(G.nodes)} nodos, {len(G.edges)} aristas[/green]")
 
         console.print("[yellow]» Entrenando predictor de resultados (sklearn)...[/yellow]")
         predictor = CareerOutcomePredictor.load_or_train()
-        console.print(f"[green]✓ Predictor entrenado y guardado[/green]")
+        console.print(
+            f"[green]✓ Predictor entrenado | CV AUC={predictor.cv_score:.3f}[/green]"
+        )
+        # FIX [M2]: comentario explicativo — el predictor se conecta automáticamente
+        # en main_api.py via CareerGraph(raw_graph, outcome_predictor=predictor)
+        console.print(
+            "[dim]  El predictor se conecta al grafo automáticamente al iniciar el servidor.[/dim]"
+        )
 
-        from backend.llm.client import get_llm_client
         console.print("[yellow]» Validando clientes LLM...[/yellow]")
-        client = get_llm_client()
-        console.print(f"[green]✓ LLM listo: {client.active_provider}[/green]")
+        try:
+            from backend.llm.client import get_llm_client
+            client = get_llm_client()
+            console.print(f"[green]✓ LLM listo: {client.active_provider} "
+                          f"({client.key_count} key(s))[/green]")
+        except EnvironmentError as e:
+            console.print(f"[yellow]⚠ LLM no configurado: {e}[/yellow]")
+            console.print("[dim]  Configura LLM_KEY_1=proveedor:api_key en .env[/dim]")
 
-        console.print("\n[bold green]✓ Entrenamiento completado exitosamente[/bold green]")
-        console.print("[dim]Los modelos están listos para ejecutar el programa.[/dim]")
+        console.print("\n[bold green]✓ Entrenamiento completado[/bold green]")
+        console.print("[dim]Ejecuta: python main.py server[/dim]")
 
     except Exception as e:
-        console.print(f"[red]✗ Error durante entrenamiento: {e}[/red]", style="red")
+        console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
 
 
 # ────────────────────────────────────────────────────────────────
-# COMANDO 2: run — Ejecutar exploración interactiva
+# COMANDO 2: run
 # ────────────────────────────────────────────────────────────────
 
 def cmd_run(args: argparse.Namespace):
-    """Ejecuta exploración interactiva usando un input guardado."""
-    console.print(Panel("[bold cyan]Modo Exploración Interactiva[/bold cyan]", border_style="cyan"))
+    """Ejecuta exploración interactiva usando un input guardado o creando uno nuevo."""
+    console.print(Panel("[bold cyan]Modo Exploración Interactiva[/bold cyan]",
+                        border_style="cyan"))
 
     manager = InputManager()
+    # FIX [M4]: crear presets solo en comandos que los necesitan
+    create_default_presets(manager)
 
-    # Opción 1: Usar un preset
     if args.input:
         user_input = manager.load_input(args.input)
         if not user_input:
@@ -136,7 +147,6 @@ def cmd_run(args: argparse.Namespace):
             sys.exit(1)
         console.print(f"[green]✓ Cargado: {args.input}[/green]")
     else:
-        # Opción 2: Crear uno nuevo interactivamente
         user_input = _interactive_input_setup()
         if not user_input:
             return
@@ -145,19 +155,17 @@ def cmd_run(args: argparse.Namespace):
 
 
 def _interactive_input_setup() -> UserInput | None:
-    """Crea una entrada interactiva."""
-    console.print("\n[bold]Crear nueva entrada[/bold]")
+    """Crea una entrada interactiva pidiendo datos al usuario."""
+    console.print("\n[bold]Crear nueva configuración[/bold]")
 
-    input_id = Prompt.ask("ID de entrada", default=f"custom_{Path.cwd().resolve().stem}")
-    source = Prompt.ask("Carrera inicial", default="junior_dev")
-
+    input_id     = Prompt.ask("ID de configuración", default="custom_session")
+    source       = Prompt.ask("Carrera inicial (ID o nombre)", default="junior_dev")
     console.print("\nPerfiles disponibles:")
     for k, desc in PROFILE_DESCRIPTIONS.items():
         console.print(f"  [bold]{k}[/bold] — {desc}")
-    profile = Prompt.ask("Perfil", default="balanced", choices=list(PROFILES.keys()))
-
-    max_years = int(Prompt.ask("Años máximos", default="12"))
-    max_risk = float(Prompt.ask("Riesgo máximo (0-1)", default="0.6"))
+    profile      = Prompt.ask("Perfil", default="balanced", choices=list(PROFILES.keys()))
+    max_years    = int(Prompt.ask("Años máximos", default="12"))
+    max_risk     = float(Prompt.ask("Riesgo máximo (0.0–1.0)", default="0.6"))
     user_profile = Prompt.ask("Describe tu perfil", default="profesional de tecnología")
 
     return UserInput(
@@ -170,69 +178,83 @@ def _interactive_input_setup() -> UserInput | None:
     )
 
 
-def _run_exploration(user_input: UserInput):
+def _run_exploration(user_input: UserInput) -> None:
     """Ejecuta la exploración con los parámetros dados."""
     console.print(Panel(
         f"[bold cyan]Exploración iniciada[/bold cyan]\n"
-        f"Carrera: {user_input.source_career} | Perfil: {user_input.profile}\n"
-        f"Años: {user_input.max_years} | Riesgo máx: {user_input.max_risk}",
+        f"Carrera: [yellow]{user_input.source_career}[/yellow] | "
+        f"Perfil: [yellow]{user_input.profile}[/yellow]\n"
+        f"Años máx: {user_input.max_years} | Riesgo máx: {user_input.max_risk}",
         border_style="cyan"
     ))
 
     try:
-        # Cargar grafo y crear generador
-        graph = CareerGraph(load_career_graph())
+        graph       = CareerGraph(load_career_graph())
         source_node = _resolve_source_node(user_input.source_career, graph)
-        profile_fn = PROFILES[user_input.profile]
-        constraints = profile_fn(user_input.max_years) if user_input.profile == "balanced" else profile_fn()
+        profile_fn  = PROFILES[user_input.profile]
 
-        config = GeneratorConfig(
+        # FIX [M1]: lógica clara y correcta para todos los perfiles
+        if user_input.profile == "balanced":
+            constraints = profile_fn(user_input.max_years)
+        else:
+            constraints = profile_fn()
+
+        config    = GeneratorConfig(
             beam_width=user_input.beam_width,
             max_depth=user_input.max_depth,
             top_k_results=user_input.top_k,
         )
-
-        console.print(f"\n[yellow]» Generando trayectorias...[/yellow]")
         generator = TrajectoryGenerator(graph, config)
-        results = generator.generate(source_node, constraints)
 
+        console.print("\n[yellow]» Generando trayectorias...[/yellow]")
+        results = generator.generate(source_node, constraints)
         _print_results_table(results)
 
-        # Análisis con IA
-        if results and Prompt.ask("\n¿Analizar con IA?", choices=["y", "n"], default="y") == "y":
-            criterion = Prompt.ask("Objetivo", default="crecimiento general balanceado")
-            analyzer = TrajectoryAnalyzer(user_profile=user_input.user_profile_description)
+        if not results:
+            console.print("[yellow]No se encontraron trayectorias con las restricciones actuales.[/yellow]")
+            console.print("[dim]Prueba con un perfil más permisivo (ambitious) o más años.[/dim]")
+            return
 
+        if Prompt.ask("\n¿Analizar con IA?", choices=["y", "n"], default="y") == "y":
+            criterion = Prompt.ask(
+                "Describe tu objetivo", default="crecimiento equilibrado a largo plazo"
+            )
+            analyzer = TrajectoryAnalyzer(user_profile=user_input.user_profile_description)
             console.print("[yellow]» Obteniendo análisis de IA...[/yellow]")
             analysis = analyzer.rank_by(results, criterion)
-            console.print(Panel(analysis.content, border_style="magenta", title="📊 Análisis de IA"))
+            console.print(Panel(
+                analysis.content,
+                border_style="magenta",
+                title=f"📊 Análisis — [{analysis.provider_used}]"
+            ))
 
     except Exception as e:
         console.print(f"[red]✗ Error en exploración: {e}[/red]")
         sys.exit(1)
 
 
-def _print_results_table(results):
-    """Imprime tabla de resultados."""
+def _print_results_table(results: list) -> None:
+    """Imprime tabla de resultados ordenada por Pareto rank."""
     if not results:
-        console.print("[yellow]No hay trayectorias que mostrar[/yellow]")
         return
 
-    table = Table(title="🎯 Trayectorias Generadas", show_header=True, header_style="bold magenta")
-    table.add_column("#", style="dim", width=3)
+    table = Table(
+        title="🎯 Trayectorias Generadas",
+        show_header=True, header_style="bold magenta"
+    )
+    table.add_column("#",       style="dim",    width=3)
     table.add_column("Trayectoria", style="cyan", min_width=40)
-    table.add_column("💰 Salario", justify="right", style="green")
-    table.add_column("📈 Crec.", justify="right", style="yellow")
-    table.add_column("⏱ Años", justify="right")
-    table.add_column("⚠️ Riesgo", justify="right")
-    table.add_column("😊 Sat.", justify="right")
-    table.add_column("🏆 Rk", justify="center")
+    table.add_column("💰 Salario",  justify="right", style="green")
+    table.add_column("📈 Crec.",    justify="right", style="yellow")
+    table.add_column("⏱ Años",     justify="right")
+    table.add_column("⚠️ Riesgo",  justify="right")
+    table.add_column("😊 Sat.",     justify="right")
+    table.add_column("🏆 Rk",      justify="center")
 
     for i, et in enumerate(results[:15], 1):
-        s = et.scores
-        path = " → ".join(et.trajectory.nodes)
+        s     = et.scores
+        path  = " → ".join(et.trajectory.nodes)
         badge = "⭐" * max(0, 3 - et.pareto_rank) if et.pareto_rank < 3 else "·"
-
         table.add_row(
             str(i),
             path[:35] + "..." if len(path) > 35 else path,
@@ -245,30 +267,31 @@ def _print_results_table(results):
         )
 
     console.print(table)
+    console.print(
+        f"[dim]Mostrando {min(15, len(results))} de {len(results)} trayectorias. "
+        f"⭐ = Pareto rank 0 (óptimo)[/dim]"
+    )
 
 
 # ────────────────────────────────────────────────────────────────
-# COMANDO 3: server — Iniciar servidor FastAPI
+# COMANDO 3: server
 # ────────────────────────────────────────────────────────────────
 
-def cmd_server(args: argparse.Namespace):
+def cmd_server(args: argparse.Namespace) -> None:
     """Inicia el servidor FastAPI con frontend."""
     console.print(Panel(
-        "[bold cyan]Iniciando servidor FastAPI[/bold cyan]\n"
-        "[dim]Backend en http://localhost:8000[/dim]\n"
-        "[dim]Frontend en http://localhost:8000[/dim]",
+        "[bold cyan]Iniciando servidor PathForge[/bold cyan]\n"
+        f"[dim]Backend + Frontend → http://{args.host}:{args.port}[/dim]\n"
+        "[dim]API docs            → http://localhost:{args.port}/docs[/dim]",
         border_style="cyan", title="🚀 SERVIDOR"
     ))
-
-    host = args.host or "0.0.0.0"
-    port = args.port or 8000
 
     try:
         import uvicorn
         uvicorn.run(
             "backend.main_api:app",
-            host=host,
-            port=port,
+            host=args.host,
+            port=args.port,
             reload=args.reload,
             log_level="info",
         )
@@ -277,40 +300,41 @@ def cmd_server(args: argparse.Namespace):
 
 
 # ────────────────────────────────────────────────────────────────
-# COMANDO 4: input — Gestionar entradas de usuario
+# COMANDO 4: input
 # ────────────────────────────────────────────────────────────────
 
-def _cmd_input_create():
-    """Crear nueva entrada."""
+def _cmd_input_create() -> None:
     manager = InputManager()
-
+    create_default_presets(manager)
     inp = _interactive_input_setup()
     if inp:
         manager.save_input(inp)
-        console.print(f"[green]✓ Entrada '{inp.id}' creada[/green]")
+        console.print(f"[green]✓ Configuración '{inp.id}' guardada[/green]")
 
 
-def _cmd_input_list():
-    """Listar todas las entradas."""
+def _cmd_input_list() -> None:
     manager = InputManager()
-    inputs = manager.list_inputs()
+    inputs  = manager.list_inputs()
 
     if not inputs:
-        console.print("[yellow]No hay entradas guardadas[/yellow]")
+        console.print("[yellow]No hay configuraciones guardadas.[/yellow]")
+        console.print("[dim]Crea una con: python main.py input create[/dim]")
         return
 
-    table = Table(title="📝 Entradas Guardadas", show_header=True)
-    table.add_column("ID", style="cyan")
-    table.add_column("Carrera", style="green")
-    table.add_column("Perfil", style="yellow")
-    table.add_column("Años", justify="right")
-    table.add_column("Riesgo", justify="right")
+    table = Table(title="📝 Configuraciones Guardadas", show_header=True)
+    table.add_column("ID",       style="cyan")
+    table.add_column("Carrera",  style="green")
+    table.add_column("Dominio",  style="blue")
+    table.add_column("Perfil",   style="yellow")
+    table.add_column("Años",     justify="right")
+    table.add_column("Riesgo",   justify="right")
     table.add_column("Actualizado", style="dim")
 
     for inp in inputs:
         table.add_row(
             inp.id,
             inp.source_career,
+            inp.domain_id or "default",
             inp.profile,
             str(inp.max_years),
             f"{inp.max_risk:.2f}",
@@ -320,45 +344,44 @@ def _cmd_input_list():
     console.print(table)
 
 
-def _cmd_input_load(input_id: str):
-    """Cargar y ejecutar una entrada."""
+def _cmd_input_load(input_id: str) -> None:
     manager = InputManager()
-    inp = manager.load_input(input_id)
-
+    inp     = manager.load_input(input_id)
     if not inp:
-        console.print(f"[red]✗ Entrada '{input_id}' no encontrada[/red]")
+        console.print(f"[red]✗ Configuración '{input_id}' no encontrada[/red]")
         _cmd_input_list()
         return
-
     console.print(f"[green]✓ Cargada: {input_id}[/green]")
     _run_exploration(inp)
 
 
-def _cmd_input_delete(input_id: str):
-    """Eliminar entrada."""
+def _cmd_input_delete(input_id: str) -> None:
     manager = InputManager()
     if manager.load_input(input_id):
         manager.delete_input(input_id)
-        console.print(f"[green]✓ Entrada '{input_id}' eliminada[/green]")
+        console.print(f"[green]✓ Configuración '{input_id}' eliminada[/green]")
     else:
-        console.print(f"[red]✗ Entrada '{input_id}' no encontrada[/red]")
+        console.print(f"[red]✗ Configuración '{input_id}' no encontrada[/red]")
 
 
 # ────────────────────────────────────────────────────────────────
 # MAIN
 # ────────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="PathForge — Career Universe Explorer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  python main.py train                          # Entrenar IA
+  python main.py train                                   # Entrenar IA
   python main.py run --input preset_junior_conservative  # Usar preset
-  python main.py server                         # Iniciar servidor
-  python main.py input list                     # Listar entradas
-  python main.py input create                   # Crear entrada nueva
+  python main.py run                                     # Configuración interactiva
+  python main.py server                                  # Iniciar servidor web
+  python main.py server --reload                         # Servidor con auto-reload
+  python main.py input list                              # Ver configuraciones guardadas
+  python main.py input create                            # Nueva configuración
+  python main.py input load preset_data_scientist        # Cargar y explorar
         """
     )
 
@@ -368,35 +391,30 @@ Ejemplos:
     subparsers.add_parser("train", help="Entrenar modelos de IA")
 
     # run
-    run_parser = subparsers.add_parser("run", help="Ejecutar exploración")
-    run_parser.add_argument("--input", "-i", help="ID de entrada guardada")
+    run_p = subparsers.add_parser("run", help="Ejecutar exploración interactiva")
+    run_p.add_argument("--input", "-i", help="ID de configuración guardada")
 
     # server
-    server_parser = subparsers.add_parser("server", help="Iniciar servidor FastAPI")
-    server_parser.add_argument("--host", default="0.0.0.0")
-    server_parser.add_argument("--port", type=int, default=8000)
-    server_parser.add_argument("--reload", action="store_true", help="Auto-reload on changes")
+    srv_p = subparsers.add_parser("server", help="Iniciar servidor FastAPI + frontend")
+    srv_p.add_argument("--host",   default="0.0.0.0")
+    srv_p.add_argument("--port",   type=int, default=8000)
+    srv_p.add_argument("--reload", action="store_true", help="Auto-reload al cambiar código")
 
     # input
-    input_parser = subparsers.add_parser("input", help="Gestionar entradas")
-    input_subparsers = input_parser.add_subparsers(dest="input_command", help="Subcomando")
-    input_subparsers.add_parser("list", help="Listar todas las entradas")
-    input_subparsers.add_parser("create", help="Crear nueva entrada")
-    load_parser = input_subparsers.add_parser("load", help="Cargar y ejecutar entrada")
-    load_parser.add_argument("id", help="ID de entrada")
-    delete_parser = input_subparsers.add_parser("delete", help="Eliminar entrada")
-    delete_parser.add_argument("id", help="ID de entrada")
+    inp_p  = subparsers.add_parser("input", help="Gestionar configuraciones de usuario")
+    inp_sp = inp_p.add_subparsers(dest="input_command", help="Subcomando")
+    inp_sp.add_parser("list",   help="Listar todas las configuraciones")
+    inp_sp.add_parser("create", help="Crear nueva configuración")
+    lp = inp_sp.add_parser("load",   help="Cargar y ejecutar configuración")
+    lp.add_argument("id", help="ID de configuración")
+    dp = inp_sp.add_parser("delete", help="Eliminar configuración")
+    dp.add_argument("id", help="ID de configuración")
 
     args = parser.parse_args()
 
-    # Mostrar banner
     console.print(Text(BANNER, style="bold cyan"))
 
-    # Crear presets por defecto si no existen
-    manager = InputManager()
-    create_default_presets(manager)
-
-    # Ejecutar comando
+    # FIX [M4]: create_default_presets SOLO en comandos que los necesitan (run, input)
     if args.command == "train":
         cmd_train()
     elif args.command == "run":
@@ -412,6 +430,8 @@ Ejemplos:
             _cmd_input_load(args.id)
         elif args.input_command == "delete":
             _cmd_input_delete(args.id)
+        else:
+            inp_p.print_help()
     else:
         parser.print_help()
 

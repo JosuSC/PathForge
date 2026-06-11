@@ -2,17 +2,24 @@
 core/graph.py
 -------------
 Capa de abstracción sobre el grafo de carreras.
-Ofrece operaciones de alto nivel: vecinos, validación de caminos,
-cálculo de atributos agregados de una trayectoria.
+
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Iterator
 
 import networkx as nx
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Constante compartida: max años por defecto
+# (sincronizada con constraints.py y main_api.py)
+# ---------------------------------------------------------------------------
+DEFAULT_MAX_YEARS: int = 12
 
 
 # ---------------------------------------------------------------------------
@@ -23,8 +30,7 @@ import numpy as np
 class Trajectory:
     """
     Representa una trayectoria profesional como secuencia de IDs de nodos.
-
-    Inmutable (frozen) para poder usarla como clave de diccionario y en sets.
+    Inmutable para poder usarla como clave de diccionario y en sets.
     """
 
     nodes: tuple[str, ...]
@@ -49,10 +55,14 @@ class CareerGraph:
     """
 
     def __init__(self, graph: nx.DiGraph, outcome_predictor=None) -> None:
-        # outcome_predictor se acepta por compatibilidad con versiones previas.
-        # El scoring actual vive en evaluator/scorer y no depende de este atributo.
         self._g = graph
         self._outcome_predictor = outcome_predictor
+        # FIX [GEN3]: calcular max_salary una sola vez para normalización dinámica
+        salaries = [
+            data.get("avg_salary", 0)
+            for _, data in self._g.nodes(data=True)
+        ]
+        self._max_salary: float = max(salaries) if salaries else 180_000
         self._validate()
 
     # ------------------------------------------------------------------
@@ -79,15 +89,12 @@ class CareerGraph:
     # ------------------------------------------------------------------
 
     def successors(self, node_id: str) -> list[str]:
-        """Retorna los nodos alcanzables desde node_id."""
         return list(self._g.successors(node_id))
 
     def node_attrs(self, node_id: str) -> dict:
-        """Retorna todos los atributos de un nodo."""
         return dict(self._g.nodes[node_id])
 
     def edge_attrs(self, u: str, v: str) -> dict:
-        """Retorna atributos de la arista u→v."""
         return dict(self._g[u][v])
 
     def has_edge(self, u: str, v: str) -> bool:
@@ -96,9 +103,17 @@ class CareerGraph:
     def all_node_ids(self) -> list[str]:
         return list(self._g.nodes())
 
+    # FIX [G4]: cached_property — se calcula una sola vez
+    @cached_property
+    def _terminal_nodes_set(self) -> frozenset[str]:
+        return frozenset(n for n in self._g.nodes() if self._g.out_degree(n) == 0)
+
     def terminal_nodes(self) -> list[str]:
-        """Retorna nodos terminales (sin aristas salientes)."""
-        return [n for n in self._g.nodes() if self._g.out_degree(n) == 0]
+        """Retorna nodos terminales (sin aristas salientes). Cacheado."""
+        return list(self._terminal_nodes_set)
+
+    def is_terminal(self, node_id: str) -> bool:
+        return node_id in self._terminal_nodes_set
 
     # ------------------------------------------------------------------
     # Scoring de trayectorias
@@ -108,45 +123,60 @@ class CareerGraph:
         """
         Calcula métricas cuantitativas de una trayectoria.
 
-        Objetivos (maximizar):
-            - salary_growth:  crecimiento salarial promedio entre pasos
-            - avg_demand:     demanda laboral promedio de los roles
-            - avg_satisfaction: satisfacción promedio de los roles
-            - final_salary:   salario del rol final
+        Objetivos a maximizar:
+            salary_growth, avg_demand, avg_satisfaction, final_salary,
+            is_terminal_end, transition_probability_score, salary_growth_edge
 
-        Costos (minimizar, devueltos como negativos para uniformidad):
-            - total_years:    años totales de la trayectoria
-            - avg_risk:       riesgo promedio de las transiciones
-            - avg_difficulty: dificultad promedio de las transiciones
+        Costos (minimizar):
+            total_years, avg_risk, avg_difficulty
         """
         if len(trajectory) < 2:
             return {}
 
-        nodes_data = [self.node_attrs(n) for n in trajectory]
-        edges_data = [
+        nodes_data  = [self.node_attrs(n) for n in trajectory]
+        edges_data  = [
             self.edge_attrs(trajectory[i], trajectory[i + 1])
             for i in range(len(trajectory) - 1)
         ]
 
-        salaries = [n["avg_salary"] for n in nodes_data]
-        demands = [n["demand"] for n in nodes_data]
-        satisfactions = [n["satisfaction"] for n in nodes_data]
+        salaries      = [n["avg_salary"]    for n in nodes_data]
+        demands       = [n["demand"]        for n in nodes_data]
+        satisfactions = [n["satisfaction"]  for n in nodes_data]
 
         salary_growth = (salaries[-1] - salaries[0]) / max(salaries[0], 1)
-        total_years = sum(e["transition_years"] for e in edges_data)
-        avg_risk = float(np.mean([e["risk"] for e in edges_data]))
+        total_years   = sum(e["transition_years"] for e in edges_data)
+        avg_risk       = float(np.mean([e["risk"]       for e in edges_data]))
         avg_difficulty = float(np.mean([e["difficulty"] for e in edges_data]))
+
+        # FIX [G1]: is_terminal_end — usado por main_api para clasificar grupos
+        is_terminal_end   = 1.0 if self.is_terminal(trajectory[-1])  else 0.0
+        is_terminal_start = 0.0 if self.is_terminal(trajectory[0])   else 1.0
+
+        # FIX [G3]: aprovechar transition_probability y salary_growth de aristas
+        trans_probs = [e.get("transition_probability") for e in edges_data]
+        trans_probs_valid = [p for p in trans_probs if p is not None]
+        transition_probability_score = (
+            float(np.mean(trans_probs_valid)) if trans_probs_valid else 0.5
+        )
+
+        edge_salary_growths = [e.get("salary_growth") for e in edges_data]
+        edge_sal_valid = [g for g in edge_salary_growths if g is not None]
+        salary_growth_edge = float(np.mean(edge_sal_valid)) if edge_sal_valid else salary_growth
 
         return {
             # Objetivos a maximizar
-            "salary_growth": round(salary_growth, 4),
-            "avg_demand": round(float(np.mean(demands)), 4),
-            "avg_satisfaction": round(float(np.mean(satisfactions)), 4),
-            "final_salary": round(salaries[-1], 2),
+            "salary_growth":               round(salary_growth,               4),
+            "avg_demand":                  round(float(np.mean(demands)),      4),
+            "avg_satisfaction":            round(float(np.mean(satisfactions)),4),
+            "final_salary":                round(salaries[-1],                 2),
+            "is_terminal_end":             is_terminal_end,               # FIX [G1]
+            "is_terminal_start":           is_terminal_start,
+            "transition_probability_score":round(transition_probability_score, 4),  # FIX [G3]
+            "salary_growth_edge":          round(salary_growth_edge,          4),   # FIX [G3]
             # Costos (menor es mejor)
-            "total_years": round(float(total_years), 2),
-            "avg_risk": round(avg_risk, 4),
-            "avg_difficulty": round(avg_difficulty, 4),
+            "total_years":    round(float(total_years),   2),
+            "avg_risk":       round(avg_risk,             4),
+            "avg_difficulty": round(avg_difficulty,       4),
         }
 
     # ------------------------------------------------------------------
@@ -157,26 +187,31 @@ class CareerGraph:
         self,
         source: str,
         max_depth: int = 5,
-        visited: frozenset[str] | None = None,
+        max_paths: int = 5_000,     # FIX [G2]: límite de paths totales
     ) -> Iterator[tuple[str, ...]]:
         """
-        Generador: itera todos los caminos simples desde source
-        hasta profundidad max_depth. Evita ciclos.
+        Itera todos los caminos simples desde source hasta max_depth.
+        Implementación iterativa con stack explícito.
+        Evita recursión profunda y añade límite de paths para grafos densos.
         """
-        if visited is None:
-            visited = frozenset()
+        count = 0
+        # Stack: (path_so_far, visited_set)
+        stack: list[tuple[tuple[str, ...], frozenset[str]]] = [
+            ((source,), frozenset({source}))
+        ]
 
-        visited = visited | {source}
+        while stack and count < max_paths:
+            path, visited = stack.pop()
+            yield path
+            count += 1
 
-        yield (source,)
+            if len(path) >= max_depth:
+                continue
 
-        if len(visited) >= max_depth:
-            return
-
-        for neighbor in self.successors(source):
-            if neighbor not in visited:
-                for sub_path in self.iter_paths_from(neighbor, max_depth, visited):
-                    yield (source,) + sub_path
+            current = path[-1]
+            for neighbor in self.successors(current):
+                if neighbor not in visited:
+                    stack.append((path + (neighbor,), visited | {neighbor}))
 
     def __repr__(self) -> str:
         return (

@@ -2,12 +2,14 @@
 backend/main_api.py
 -------------------
 FastAPI + WebSocket para PathForge.
+
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -26,36 +28,24 @@ from backend.core.generator import GeneratorConfig, TrajectoryGenerator
 from backend.core.graph import CareerGraph
 from backend.core.simulation import CareerSimulator
 from backend.core.scorer import CareerOutcomePredictor
-from backend.data.loader import load_career_graph
+from backend.data.loader import load_career_graph, load_domain_graph, list_available_domains
 from backend.data.input_manager import InputManager, UserInput
 from backend.llm.analyzer import TrajectoryAnalyzer
 from backend.llm.client import get_llm_client
 
 # ──────────────────────────────────────────────────────────────
-# App setup
+# Estado global
 # ──────────────────────────────────────────────────────────────
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
-app = FastAPI(title="PathForge API", version="3.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
-# ──────────────────────────────────────────────────────────────
-# Estado global — inicializado una vez
-# ──────────────────────────────────────────────────────────────
-
 _career_graph: CareerGraph | None = None
 _predictor:    CareerOutcomePredictor | None = None
 _simulator:    CareerSimulator | None = None
+_domain_graphs: dict[str, CareerGraph] = {}
 
 
 def _group_by_terminal(results: list) -> dict[str, list]:
-    """Agrupa trayectorias por nodo terminal final."""
     groups: dict[str, list] = {}
     for et in results:
         terminal = et.trajectory.nodes[-1] if et.trajectory.nodes else "unknown"
@@ -63,37 +53,50 @@ def _group_by_terminal(results: list) -> dict[str, list]:
     return groups
 
 
-def _init_components():
-    """Inicializa todos los componentes de IA en orden correcto."""
+def _init_components() -> None:
     global _career_graph, _predictor, _simulator
-
     if _career_graph is not None:
         return
-
     logger.info("Inicializando componentes de IA...")
-
-    # 1. Entrenar / cargar modelo sklearn
-    _predictor = CareerOutcomePredictor.load_or_train()
-
-    # 2. Inicializar simulador Monte Carlo
-    _simulator = CareerSimulator(n_simulations=40, outcome_model=None)
-
-    # 3. Cargar grafo con predictor integrado
-    raw_graph    = load_career_graph()
+    _predictor    = CareerOutcomePredictor.load_or_train()
+    _simulator    = CareerSimulator(n_simulations=40, outcome_model=None)
+    raw_graph     = load_career_graph()
     _career_graph = CareerGraph(raw_graph, outcome_predictor=_predictor)
-
     logger.success(f"Sistema listo | {_career_graph}")
 
 
-@app.on_event("startup")
-async def startup():
+# FIX [10]: lifespan reemplaza el deprecated @app.on_event("startup")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _init_components)
+    yield
+    # shutdown — liberar recursos si fuera necesario
+    _domain_graphs.clear()
+    logger.info("PathForge API apagada.")
+
+
+app = FastAPI(title="PathForge API", version="5.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+)
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 def get_graph() -> CareerGraph:
     _init_components()
     return _career_graph
+
+
+def get_domain_graph(domain_id: str) -> CareerGraph:
+    _init_components()
+    if domain_id not in _domain_graphs:
+        raw_graph = load_domain_graph(domain_id)
+        _domain_graphs[domain_id] = CareerGraph(raw_graph, outcome_predictor=_predictor)
+        logger.info(f"Grafo de dominio '{domain_id}' cargado y cacheado")
+    return _domain_graphs[domain_id]
 
 
 # ──────────────────────────────────────────────────────────────
@@ -108,7 +111,7 @@ class NodeInput(BaseModel):
     satisfaction: float = Field(ge=0, le=1)
     years_experience: int = Field(ge=0)
     skills: list[str] = []
-    type: str = "role"
+    type: str = "entry"
     is_terminal: bool = False
 
 
@@ -122,6 +125,7 @@ class EdgeInput(BaseModel):
 
 class ExploreRequest(BaseModel):
     source: str
+    domain_id: str | None = None
     nodes: list[NodeInput] = []
     edges: list[EdgeInput] = []
     profile: str = "balanced"
@@ -143,6 +147,7 @@ class AnalyzeRequest(BaseModel):
 class SimulateRequest(BaseModel):
     path: list[str]
     n_simulations: int = Field(default=50, ge=10, le=200)
+    domain_id: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -161,6 +166,8 @@ def build_constraint(req: ExploreRequest) -> Constraint:
 
 
 def build_graph_from_request(req: ExploreRequest) -> CareerGraph:
+    if req.domain_id:
+        return get_domain_graph(req.domain_id)
     if req.nodes and req.edges:
         import networkx as nx
         G = nx.DiGraph()
@@ -195,7 +202,29 @@ def traj_to_dict(et) -> dict:
 @app.get("/")
 async def serve_frontend():
     index = FRONTEND_DIR / "index.html"
-    return FileResponse(str(index)) if index.exists() else {"message": "PathForge API v3.0"}
+    return FileResponse(str(index)) if index.exists() else {"message": "PathForge API v5.0"}
+
+
+@app.get("/api/domains")
+async def get_domains():
+    domains = list_available_domains()
+    return {"domains": domains, "total": len(domains)}
+
+
+@app.get("/api/domains/{domain_id}/graph")
+async def get_domain_graph_api(domain_id: str):
+    try:
+        graph = get_domain_graph(domain_id)
+    except FileNotFoundError as e:
+        return {"error": str(e)}
+    nodes = [{"id": nid, **graph.node_attrs(nid)} for nid in graph.all_node_ids()]
+    edges = [{"from": u, "to": v, **graph.edge_attrs(u, v)} for u, v in graph._g.edges()]
+    return {
+        "domain_id": domain_id,
+        "nodes":     nodes,
+        "edges":     edges,
+        "terminals": graph.terminal_nodes(),
+    }
 
 
 @app.get("/api/graph")
@@ -203,36 +232,25 @@ async def get_default_graph():
     graph = get_graph()
     nodes = [{"id": nid, **graph.node_attrs(nid)} for nid in graph.all_node_ids()]
     edges = [{"from": u, "to": v, **graph.edge_attrs(u, v)} for u, v in graph._g.edges()]
-    return {
-        "nodes":     nodes,
-        "edges":     edges,
-        "terminals": graph.terminal_nodes(),
-    }
+    return {"nodes": nodes, "edges": edges, "terminals": graph.terminal_nodes()}
 
 
 @app.get("/api/terminals")
 async def get_terminals():
-    """Retorna los nodos terminales (posibles finales de trayectoria)."""
     graph = get_graph()
     terminals = graph.terminal_nodes()
-    return {
-        "terminals": [
-            {"id": tid, **graph.node_attrs(tid)}
-            for tid in terminals
-        ]
-    }
+    return {"terminals": [{"id": tid, **graph.node_attrs(tid)} for tid in terminals]}
 
 
 @app.get("/api/model/info")
 async def model_info():
-    """Información del modelo sklearn."""
     if _predictor is None:
         return {"available": False}
     return {
-        "available":            True,
-        "cv_auc":               round(_predictor.cv_score, 4),
-        "feature_importances":  _predictor.feature_importances,
-        "model_type":           "GradientBoostingClassifier",
+        "available":           True,
+        "cv_auc":              round(_predictor.cv_score, 4),
+        "feature_importances": _predictor.feature_importances,
+        "model_type":          "GradientBoostingClassifier",
     }
 
 
@@ -241,31 +259,27 @@ async def generate_trajectories(req: ExploreRequest):
     graph       = build_graph_from_request(req)
     constraints = build_constraint(req)
     config      = GeneratorConfig(
-        beam_width=req.beam_width, max_depth=req.max_depth,
-        top_k_results=req.top_k,
+        beam_width=req.beam_width, max_depth=req.max_depth, top_k_results=req.top_k,
     )
     generator = TrajectoryGenerator(graph, config)
     results   = generator.generate(req.source, constraints)
     groups    = _group_by_terminal(results)
-
     return {
         "trajectories":    [traj_to_dict(et) for et in results],
         "terminal_groups": {k: [traj_to_dict(et) for et in v] for k, v in groups.items()},
         "terminals_found": list(groups.keys()),
+        "domain_id":       req.domain_id,
     }
 
 
 @app.post("/api/simulate")
 async def simulate_trajectory(req: SimulateRequest):
-    """Ejecuta simulación Monte Carlo en una trayectoria específica."""
     if _simulator is None:
         return {"error": "Simulator not initialized"}
-
-    graph = get_graph()
+    graph      = get_domain_graph(req.domain_id) if req.domain_id else get_graph()
     node_attrs = {nid: graph.node_attrs(nid) for nid in graph.all_node_ids()}
     edge_attrs = {(u, v): graph.edge_attrs(u, v) for u, v in graph._g.edges()}
-
-    sim = CareerSimulator(n_simulations=req.n_simulations)
+    sim    = CareerSimulator(n_simulations=req.n_simulations)
     result = sim.monte_carlo(tuple(req.path), node_attrs, edge_attrs)
     return result
 
@@ -281,7 +295,6 @@ async def llm_status():
 
 @app.post("/api/analyze")
 async def analyze_trajectories(req: AnalyzeRequest):
-    """Análisis cualitativo de trayectorias con LLM (ahora en español)."""
     try:
         from backend.core.evaluator import EvaluatedTrajectory
         from backend.core.graph import Trajectory
@@ -315,6 +328,7 @@ async def analyze_trajectories(req: AnalyzeRequest):
 class UserInputRequest(BaseModel):
     id: str
     source_career: str
+    domain_id: str | None = None
     profile: str = "balanced"
     max_years: int = 12
     max_risk: float = 0.6
@@ -327,12 +341,12 @@ class UserInputRequest(BaseModel):
 
 @app.post("/api/inputs/create")
 async def create_input(req: UserInputRequest):
-    """Crear y guardar nueva entrada."""
     try:
-        manager = InputManager()
+        manager    = InputManager()
         user_input = UserInput(
             id=req.id,
             source_career=req.source_career,
+            domain_id=req.domain_id,      # FIX [06]: persistido correctamente
             profile=req.profile,
             max_years=req.max_years,
             max_risk=req.max_risk,
@@ -351,15 +365,15 @@ async def create_input(req: UserInputRequest):
 
 @app.get("/api/inputs/list")
 async def list_inputs():
-    """Listar todos los inputs guardados."""
     try:
         manager = InputManager()
-        inputs = manager.list_inputs()
+        inputs  = manager.list_inputs()
         return {
             "inputs": [
                 {
                     "id": inp.id,
                     "source_career": inp.source_career,
+                    "domain_id": inp.domain_id,    # FIX [06]: incluido en respuesta
                     "profile": inp.profile,
                     "max_years": inp.max_years,
                     "max_risk": inp.max_risk,
@@ -377,15 +391,15 @@ async def list_inputs():
 
 @app.get("/api/inputs/{input_id}")
 async def get_input(input_id: str):
-    """Obtener detalles de un input específico."""
     try:
-        manager = InputManager()
+        manager    = InputManager()
         user_input = manager.load_input(input_id)
         if not user_input:
             return {"error": "Input not found"}
         return {
             "id": user_input.id,
             "source_career": user_input.source_career,
+            "domain_id": user_input.domain_id,    # FIX [06]: incluido en respuesta
             "profile": user_input.profile,
             "max_years": user_input.max_years,
             "max_risk": user_input.max_risk,
@@ -404,7 +418,6 @@ async def get_input(input_id: str):
 
 @app.delete("/api/inputs/{input_id}")
 async def delete_input(input_id: str):
-    """Eliminar un input."""
     try:
         manager = InputManager()
         manager.delete_input(input_id)
@@ -416,15 +429,13 @@ async def delete_input(input_id: str):
 
 # ──────────────────────────────────────────────────────────────
 # WebSocket — stream enriquecido del Beam Search
-# Fix: cierre limpio (evita code 1006), heartbeat, timeouts
 # ──────────────────────────────────────────────────────────────
 
-WS_HEARTBEAT_INTERVAL = 25  # segundos entre pings del servidor
-WS_CLIENT_TIMEOUT     = 120 # segundos sin mensaje del cliente
+WS_HEARTBEAT_INTERVAL = 25
+WS_CLIENT_TIMEOUT     = 120
 
 
 async def _ws_heartbeat(websocket: WebSocket):
-    """Envia pings periodicos para mantener la conexion viva."""
     try:
         while True:
             await asyncio.sleep(WS_HEARTBEAT_INTERVAL)
@@ -438,7 +449,6 @@ async def _ws_heartbeat(websocket: WebSocket):
 
 
 async def _ws_send_safe(websocket: WebSocket, data: dict):
-    """Envia JSON capturando errores de conexion cerrada."""
     try:
         await websocket.send_json(data)
     except Exception as e:
@@ -446,11 +456,11 @@ async def _ws_send_safe(websocket: WebSocket, data: dict):
 
 
 async def _ws_close_clean(websocket: WebSocket, code: int, reason: str):
-    """Cierra el WS con un close frame valido. Sin esto el cliente recibe 1006."""
     try:
         await websocket.close(code=code, reason=reason[:120])
     except Exception:
         pass
+
 
 @app.websocket("/ws/explore")
 async def websocket_explore(websocket: WebSocket):
@@ -460,7 +470,6 @@ async def websocket_explore(websocket: WebSocket):
     heartbeat_task = asyncio.create_task(_ws_heartbeat(websocket))
 
     try:
-        # Leer mensaje inicial con timeout
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=WS_CLIENT_TIMEOUT)
         except asyncio.TimeoutError:
@@ -470,10 +479,9 @@ async def websocket_explore(websocket: WebSocket):
 
         message = json.loads(raw)
 
-        # Si el cliente manda ping primero, respondemos y seguimos
         if message.get("type") == "ping":
             await websocket.send_json({"type": "pong", "timestamp": message.get("timestamp")})
-            raw = await asyncio.wait_for(websocket.receive_text(), timeout=WS_CLIENT_TIMEOUT)
+            raw     = await asyncio.wait_for(websocket.receive_text(), timeout=WS_CLIENT_TIMEOUT)
             message = json.loads(raw)
 
         if message.get("type") != "start":
@@ -491,22 +499,20 @@ async def websocket_explore(websocket: WebSocket):
         generator = TrajectoryGenerator(graph, config)
         loop      = asyncio.get_event_loop()
 
-        # Emitir informacion del grafo al inicio
         await _ws_send_safe(websocket, {
             "type":      "graph_info",
             "nodes":     [{"id": nid, **graph.node_attrs(nid)} for nid in graph.all_node_ids()],
             "edges":     [{"from": u, "to": v, **graph.edge_attrs(u, v)} for u, v in graph._g.edges()],
             "terminals": graph.terminal_nodes(),
             "source":    req.source,
+            "domain_id": req.domain_id,
         })
 
-                # Rastrear nodos y aristas descubiertos para enviarlos en cada step
-        discovered_nodes = {req.source}
-        discovered_edges = set()
+        discovered_nodes: set[str] = {req.source}
+        discovered_edges: set[tuple] = set()
         terminal_set = set(graph.terminal_nodes())
 
         async def emit_step(depth: int, beam: list, completed: list):
-            # Detectar nodos nuevos en este step
             new_nodes = []
             for path in beam:
                 for node_id in path:
@@ -514,7 +520,6 @@ async def websocket_explore(websocket: WebSocket):
                         discovered_nodes.add(node_id)
                         new_nodes.append(node_id)
 
-            # Detectar aristas nuevas en este step
             new_edges = []
             for path in beam:
                 for i in range(len(path) - 1):
@@ -523,12 +528,9 @@ async def websocket_explore(websocket: WebSocket):
                         discovered_edges.add(edge_key)
                         new_edges.append([path[i], path[i + 1]])
 
-            # Verificar si se alcanzo un nodo terminal
-            terminal_reached = ""
-            for node_id in new_nodes:
-                if node_id in terminal_set:
-                    terminal_reached = node_id
-                    break
+            terminal_reached = next(
+                (nid for nid in new_nodes if nid in terminal_set), ""
+            )
 
             await _ws_send_safe(websocket, {
                 "type": "step",
@@ -542,7 +544,7 @@ async def websocket_explore(websocket: WebSocket):
             })
             await asyncio.sleep(0.06)
 
-        def sync_callback(depth: int, beam: list, completed: list):
+        def sync_callback(depth: int, beam: list, completed: list, *args):
             asyncio.run_coroutine_threadsafe(emit_step(depth, beam, completed), loop)
 
         results = await loop.run_in_executor(
@@ -561,10 +563,9 @@ async def websocket_explore(websocket: WebSocket):
             "trajectories":    [traj_to_dict(et) for et in results],
             "terminal_groups": {k: [traj_to_dict(et) for et in v] for k, v in groups.items()},
             "terminals_found": list(groups.keys()),
+            "domain_id":       req.domain_id,
         })
         await _ws_send_safe(websocket, {"type": "done"})
-
-        # CIERRE LIMPIO - esto es lo que faltaba, causaba el code 1006
         await _ws_close_clean(websocket, 1000, "Exploration complete")
 
     except WebSocketDisconnect:

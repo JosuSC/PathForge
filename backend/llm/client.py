@@ -3,29 +3,27 @@ backend/llm/client.py
 ---------------------
 Cliente LLM multi-proveedor con cola circular de API keys.
 
-Arquitectura:
-    - Soporta Gemini, Claude (Anthropic) y OpenAI
-    - Las keys se cargan desde .env como LLM_KEY_1..N
-    - Cola circular: cuando una key falla por tokens/rate-limit,
-      pasa automáticamente a la siguiente
-    - Thread-safe con threading.Lock
-    - Backoff exponencial por key antes de rotar
-
-Formato .env:
-    LLM_KEY_1=gemini:AIza...
-    LLM_KEY_2=claude:sk-ant-...
-    LLM_KEY_3=openai:sk-...
+v2 — Fixes:
+[CL1] Groq, DeepSeek y Mistral añadidos a _PROVIDER_CALLERS y _DEFAULT_MODELS
+      (todos usan API OpenAI-compatible). Validación temprana en _load_keys_from_env.
+[CL2] complete() reescrito con lógica de loop clara: un intento por key disponible,
+      reintentos solo en errores no-quota, sin condiciones de salida ambiguas.
+[CL3] _get_next_available_key() hace get + rotate bajo un solo lock. Elimina
+      race condition en entornos multi-thread (FastAPI con requests concurrentes).
+[CL4] _call_gemini() con manejo explícito de ambos SDKs y sus configuraciones.
+[CL5] sleep con jitter reducido (0.5-1.5s) y comentario explicativo.
+[CL6] get_llm_client() cachea estado de error para evitar tormenta de reintentos.
 """
 
 from __future__ import annotations
 
 import os
+import random
 import time
 import threading
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum
 from typing import Callable
-from collections import deque
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -38,38 +36,40 @@ load_dotenv()
 # ──────────────────────────────────────────────────────────────
 
 class Provider(str, Enum):
-    GEMINI = "gemini"
-    CLAUDE = "claude"
-    OPENAI = "openai"
+    GEMINI     = "gemini"
+    CLAUDE     = "claude"
+    OPENAI     = "openai"
     OPENROUTER = "openrouter"
+    GROQ       = "groq"       # FIX [CL1]: ahora soportado
+    DEEPSEEK   = "deepseek"   # FIX [CL1]: ahora soportado
+    MISTRAL    = "mistral"    # FIX [CL1]: ahora soportado
 
 
 @dataclass
 class LLMKey:
     """Representa una API key con su proveedor y estado de salud."""
 
-    provider: Provider
-    key: str
-    failures: int = 0
-    cooldown_until: float = 0.0  # timestamp unix
+    provider:       Provider
+    key:            str
+    failures:       int   = 0
+    cooldown_until: float = 0.0
 
     @property
     def is_available(self) -> bool:
         return time.time() >= self.cooldown_until
 
     def mark_failure(self, cooldown_secs: float = 60.0) -> None:
-        """Marca fallo y pone en cooldown exponencial."""
+        """Cooldown exponencial: 60s → 120s → 240s → max 600s."""
         self.failures += 1
-        # 60s → 120s → 240s → max 600s
         wait = min(cooldown_secs * (2 ** (self.failures - 1)), 600.0)
         self.cooldown_until = time.time() + wait
         logger.warning(
-            f"Key [{self.provider.value}] en cooldown por {wait:.0f}s "
+            f"Key [{self.provider.value}] en cooldown {wait:.0f}s "
             f"(fallo #{self.failures})"
         )
 
     def mark_success(self) -> None:
-        self.failures = 0
+        self.failures       = 0
         self.cooldown_until = 0.0
 
 
@@ -79,12 +79,8 @@ class LLMKey:
 
 def _load_keys_from_env() -> list[LLMKey]:
     """
-    Lee todas las variables LLM_KEY_N del entorno.
-    Formato: provider:api_key_value
-
-    Ejemplo:
-        LLM_KEY_1=gemini:AIza...
-        LLM_KEY_2=claude:sk-ant-...
+    Lee LLM_KEY_N del entorno. Formato: provider:api_key
+    FIX [CL1]: valida que el proveedor tiene caller registrado.
     """
     keys: list[LLMKey] = []
     i = 1
@@ -94,13 +90,15 @@ def _load_keys_from_env() -> list[LLMKey]:
             break
         raw = raw.strip()
         if ":" not in raw:
-            logger.warning(f"LLM_KEY_{i} tiene formato inválido (esperado provider:key)")
+            logger.warning(f"LLM_KEY_{i} formato inválido (esperado provider:key). Saltando.")
             i += 1
             continue
 
         provider_str, api_key = raw.split(":", 1)
+        provider_str = provider_str.lower().strip()
+
         try:
-            provider = Provider(provider_str.lower().strip())
+            provider = Provider(provider_str)
         except ValueError:
             logger.warning(f"Proveedor desconocido en LLM_KEY_{i}: '{provider_str}'. Saltando.")
             i += 1
@@ -111,11 +109,20 @@ def _load_keys_from_env() -> list[LLMKey]:
             i += 1
             continue
 
+        # FIX [CL1]: validación temprana — avisar si no hay caller registrado
+        if provider not in _PROVIDER_CALLERS:
+            logger.warning(
+                f"LLM_KEY_{i}: proveedor '{provider.value}' definido pero sin "
+                f"adaptador registrado. Saltando."
+            )
+            i += 1
+            continue
+
         keys.append(LLMKey(provider=provider, key=api_key.strip()))
         logger.info(f"Key cargada: LLM_KEY_{i} [{provider.value}]")
         i += 1
 
-    # Fallback: compatibilidad con .env antiguo que solo tiene GEMINI_API_KEY
+    # Fallback legacy: GEMINI_API_KEY
     if not keys:
         legacy = os.getenv("GEMINI_API_KEY", "").strip()
         if legacy:
@@ -130,28 +137,40 @@ def _load_keys_from_env() -> list[LLMKey]:
 # ──────────────────────────────────────────────────────────────
 
 def _call_gemini(key: str, prompt: str, model: str) -> str:
-    """Llama a Gemini priorizando google.genai y manteniendo fallback legacy."""
+    """
+    FIX [CL4]: manejo explícito del nuevo SDK (google-genai) y del legacy
+    (google-generativeai), con sus configuraciones correctas para cada uno.
+    """
     try:
+        # Nuevo SDK: google-genai >= 1.0
         from google import genai
+        from google.genai import types as genai_types
 
         client = genai.Client(api_key=key)
         response = client.models.generate_content(
             model=model,
             contents=prompt,
-            config={
-                "temperature": 0.3,
-                "max_output_tokens": 1024,
-            },
+            config=genai_types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=1024,
+            ),
         )
         return (response.text or "").strip()
-    except ImportError:
-        # Fallback para entornos con la librería legacy instalada.
-        import google.generativeai as genai
 
-        genai.configure(api_key=key)
-        m = genai.GenerativeModel(
+    except ImportError:
+        pass
+    except Exception as e:
+        # El nuevo SDK está instalado pero falló — propagar el error
+        raise
+
+    # Fallback: legacy google-generativeai
+    try:
+        import google.generativeai as genai_legacy
+
+        genai_legacy.configure(api_key=key)
+        m = genai_legacy.GenerativeModel(
             model_name=model,
-            generation_config=genai.types.GenerationConfig(
+            generation_config=genai_legacy.types.GenerationConfig(
                 temperature=0.3,
                 max_output_tokens=1024,
             ),
@@ -159,9 +178,15 @@ def _call_gemini(key: str, prompt: str, model: str) -> str:
         response = m.generate_content(prompt)
         return response.text.strip()
 
+    except ImportError:
+        raise ImportError(
+            "No se encontró ningún SDK de Gemini. "
+            "Instala: pip install google-genai  (nuevo) "
+            "o pip install google-generativeai  (legacy)"
+        )
+
 
 def _call_claude(key: str, prompt: str, model: str) -> str:
-    """Llama a la API de Anthropic Claude y retorna el texto."""
     import anthropic
     client = anthropic.Anthropic(api_key=key)
     message = client.messages.create(
@@ -173,7 +198,6 @@ def _call_claude(key: str, prompt: str, model: str) -> str:
 
 
 def _call_openai(key: str, prompt: str, model: str) -> str:
-    """Llama a la API de OpenAI y retorna el texto."""
     import openai
     client = openai.OpenAI(api_key=key)
     response = client.chat.completions.create(
@@ -186,12 +210,8 @@ def _call_openai(key: str, prompt: str, model: str) -> str:
 
 
 def _call_openrouter(key: str, prompt: str, model: str) -> str:
-    """Llama a la API de OpenRouter (compatible con OpenAI) y retorna el texto."""
     import openai
-    client = openai.OpenAI(
-        api_key=key,
-        base_url="https://openrouter.ai/api/v1",
-    )
+    client = openai.OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1")
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
@@ -201,26 +221,69 @@ def _call_openrouter(key: str, prompt: str, model: str) -> str:
     return response.choices[0].message.content.strip()
 
 
-# Mapa proveedor → función adaptadora
+def _call_groq(key: str, prompt: str, model: str) -> str:
+    """FIX [CL1]: Groq — API OpenAI-compatible con base_url propio."""
+    import openai
+    client = openai.OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1")
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _call_deepseek(key: str, prompt: str, model: str) -> str:
+    """FIX [CL1]: DeepSeek — API OpenAI-compatible."""
+    import openai
+    client = openai.OpenAI(api_key=key, base_url="https://api.deepseek.com/v1")
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _call_mistral(key: str, prompt: str, model: str) -> str:
+    """FIX [CL1]: Mistral — API OpenAI-compatible."""
+    import openai
+    client = openai.OpenAI(api_key=key, base_url="https://api.mistral.ai/v1")
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=1024,
+        temperature=0.3,
+    )
+    return response.choices[0].message.content.strip()
+
+
+# FIX [CL1]: Groq, DeepSeek y Mistral registrados
 _PROVIDER_CALLERS: dict[Provider, Callable] = {
-    Provider.GEMINI: _call_gemini,
-    Provider.CLAUDE: _call_claude,
-    Provider.OPENAI: _call_openai,
+    Provider.GEMINI:     _call_gemini,
+    Provider.CLAUDE:     _call_claude,
+    Provider.OPENAI:     _call_openai,
     Provider.OPENROUTER: _call_openrouter,
+    Provider.GROQ:       _call_groq,
+    Provider.DEEPSEEK:   _call_deepseek,
+    Provider.MISTRAL:    _call_mistral,
 }
 
-# Modelos por defecto
 _DEFAULT_MODELS: dict[Provider, str] = {
-    Provider.GEMINI: "gemini-1.5-flash",
-    Provider.CLAUDE: "claude-haiku-4-5-20251001",
-    Provider.OPENAI: "gpt-4o-mini",
+    Provider.GEMINI:     "gemini-1.5-flash",
+    Provider.CLAUDE:     "claude-haiku-4-5-20251001",
+    Provider.OPENAI:     "gpt-4o-mini",
     Provider.OPENROUTER: "openrouter/auto",
+    Provider.GROQ:       "llama-3.1-8b-instant",   # FIX [CL1]
+    Provider.DEEPSEEK:   "deepseek-chat",           # FIX [CL1]
+    Provider.MISTRAL:    "mistral-small-latest",    # FIX [CL1]
 }
 
-# Errores que indican quota/rate-limit (rotar key) vs errores fatales
 _QUOTA_ERROR_PATTERNS = (
     "quota", "rate", "limit", "429", "resource_exhausted",
-    "insufficient_quota", "overloaded", "capacity",
+    "insufficient_quota", "overloaded", "capacity", "too many",
 )
 
 
@@ -236,32 +299,27 @@ def _is_quota_error(exc: Exception) -> bool:
 class LLMClient:
     """
     Cliente LLM multi-proveedor con cola circular de API keys.
-
-    - Rota automáticamente cuando una key se queda sin tokens
-    - Thread-safe
-    - Backoff exponencial por key en cooldown
-    - Compatible con Gemini, Claude y OpenAI
-
-    Uso:
-        client = LLMClient()
-        text = client.complete("tu prompt aquí")
+    Thread-safe. Backoff exponencial. Soporta 7 proveedores.
     """
 
-    def __init__(self, max_retries: int = 3) -> None:
-        self._keys: list[LLMKey] = _load_keys_from_env()
-        self._max_retries = max_retries
-        self._lock = threading.Lock()
-        self._current_idx = 0  # índice actual en la cola circular
+    def __init__(self, max_retries_per_key: int = 2) -> None:
+        self._keys             = _load_keys_from_env()
+        self._max_retries      = max_retries_per_key
+        self._lock             = threading.Lock()
+        self._current_idx: int = 0
 
         if not self._keys:
             raise EnvironmentError(
-                "No se encontraron API keys. "
-                "Configura LLM_KEY_1, LLM_KEY_2... en tu .env\n"
-                "Formato: LLM_KEY_1=gemini:tu_api_key"
+                "No se encontraron API keys válidas.\n"
+                "Configura en .env:\n"
+                "  LLM_KEY_1=gemini:tu_api_key\n"
+                "  LLM_KEY_2=claude:sk-ant-...\n"
+                "Proveedores soportados: "
+                + ", ".join(p.value for p in _PROVIDER_CALLERS)
             )
 
         logger.info(
-            f"LLMClient iniciado con {len(self._keys)} key(s): "
+            f"LLMClient iniciado: {len(self._keys)} key(s) — "
             + ", ".join(f"[{k.provider.value}]" for k in self._keys)
         )
 
@@ -269,54 +327,69 @@ class LLMClient:
 
     def complete(self, prompt: str) -> str:
         """
-        Envía el prompt al LLM activo y retorna la respuesta.
+        Envía el prompt al LLM activo con rotación automática de keys.
 
-        Rota automáticamente a la siguiente key en caso de error
-        por quota/rate-limit. Lanza RuntimeError si todas fallan.
+        FIX [CL2]: loop claro — itera cada key disponible exactamente una vez.
+        Si una key da error de quota → cooldown + rotar.
+        Si una key da error no-quota → reintentar esa key (max_retries veces).
+        Si todas fallan → RuntimeError.
+
+        FIX [CL5]: sleep con jitter para errores transitorios (ejecutado en
+        thread pool via run_in_executor en main_api, no bloquea event loop).
         """
-        total_keys = len(self._keys)
-        attempts_per_key = max(1, self._max_retries // total_keys)
-        tried: set[int] = set()
+        n_keys    = len(self._keys)
+        keys_tried: set[int] = set()
 
-        for _ in range(total_keys * attempts_per_key + total_keys):
-            key_obj, idx = self._get_current_key()
+        while len(keys_tried) < n_keys:
+            key_obj, idx = self._get_next_available_key()
 
-            if idx in tried and len(tried) >= total_keys:
-                break  # ya probamos todas las keys disponibles
+            if idx in keys_tried:
+                # Dimos la vuelta completa sin encontrar una key fresca
+                break
+            keys_tried.add(idx)
 
-            tried.add(idx)
-
-            try:
-                result = self._call(key_obj, prompt)
-                key_obj.mark_success()
-                logger.debug(
-                    f"LLM OK [{key_obj.provider.value}] "
-                    f"key_idx={idx} len={len(result)}"
-                )
-                return result
-
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    logger.warning(
-                        f"Quota/rate-limit en key {idx} [{key_obj.provider.value}]: {exc}"
+            # Reintentos en esta key para errores no-quota
+            for attempt in range(1, self._max_retries + 1):
+                try:
+                    result = self._call(key_obj, prompt)
+                    key_obj.mark_success()
+                    logger.debug(
+                        f"LLM OK [{key_obj.provider.value}] "
+                        f"key={idx} len={len(result)} attempt={attempt}"
                     )
-                    key_obj.mark_failure()
-                    self._rotate()
-                else:
-                    # Error no relacionado con quota → reintentar misma key
+                    return result
+
+                except Exception as exc:
+                    if _is_quota_error(exc):
+                        logger.warning(
+                            f"Quota/rate-limit key {idx} "
+                            f"[{key_obj.provider.value}]: {exc}"
+                        )
+                        key_obj.mark_failure()
+                        break  # salir del loop de reintentos, rotar key
+
+                    # Error transitorio (red, timeout) → esperar y reintentar
+                    jitter = random.uniform(0.5, 1.5)
                     logger.warning(
-                        f"Error en key {idx} [{key_obj.provider.value}]: {exc}"
+                        f"Error transitorio key {idx} "
+                        f"[{key_obj.provider.value}] attempt {attempt}/{self._max_retries}: "
+                        f"{exc}. Esperando {jitter:.1f}s..."
                     )
-                    time.sleep(2)
+                    if attempt < self._max_retries:
+                        # FIX [CL5]: sleep con jitter, documentado como blocking-ok
+                        # (este método se llama desde run_in_executor en main_api)
+                        time.sleep(jitter)
+                    else:
+                        key_obj.mark_failure(cooldown_secs=30.0)
 
         raise RuntimeError(
-            f"Todas las {total_keys} API key(s) fallaron. "
-            "Revisa tu .env y los límites de cuota."
+            f"Todas las {n_keys} API key(s) fallaron o están en cooldown. "
+            "Revisa tu .env y los límites de cuota. "
+            f"Estado: {self.status()}"
         )
 
     @property
     def active_provider(self) -> str:
-        """Nombre del proveedor actualmente activo."""
         with self._lock:
             return self._keys[self._current_idx].provider.value
 
@@ -325,14 +398,13 @@ class LLMClient:
         return len(self._keys)
 
     def status(self) -> list[dict]:
-        """Retorna el estado de todas las keys (para debugging)."""
         now = time.time()
         return [
             {
-                "index": i,
-                "provider": k.provider.value,
-                "available": k.is_available,
-                "failures": k.failures,
+                "index":             i,
+                "provider":          k.provider.value,
+                "available":         k.is_available,
+                "failures":          k.failures,
                 "cooldown_remaining": max(0.0, round(k.cooldown_until - now, 1)),
             }
             for i, k in enumerate(self._keys)
@@ -340,37 +412,42 @@ class LLMClient:
 
     # ── Internals ────────────────────────────────────────────────
 
-    def _get_current_key(self) -> tuple[LLMKey, int]:
-        """Retorna la key actual. Si está en cooldown, busca la siguiente disponible."""
+    def _get_next_available_key(self) -> tuple[LLMKey, int]:
+        """
+        FIX [CL3]: get + rotate bajo un SOLO lock para evitar race condition
+        en entornos multi-thread (FastAPI con requests concurrentes).
+
+        Si todas las keys están en cooldown, espera la que se libere antes.
+        """
         with self._lock:
-            start = self._current_idx
-            for _ in range(len(self._keys)):
+            n = len(self._keys)
+            # Buscar la primera key disponible desde la posición actual
+            for _ in range(n):
                 key = self._keys[self._current_idx]
+                idx = self._current_idx
+                # Avanzar el índice para el próximo llamador (round-robin)
+                self._current_idx = (self._current_idx + 1) % n
                 if key.is_available:
-                    return key, self._current_idx
-                # Esta key está en cooldown → saltar
-                self._current_idx = (self._current_idx + 1) % len(self._keys)
+                    return key, idx
 
             # Todas en cooldown → esperar la que se libere antes
-            earliest_key = min(self._keys, key=lambda k: k.cooldown_until)
-            wait = max(0.0, earliest_key.cooldown_until - time.time())
+            earliest = min(self._keys, key=lambda k: k.cooldown_until)
+            wait     = max(0.0, earliest.cooldown_until - time.time())
             if wait > 0:
                 logger.info(f"Todas las keys en cooldown. Esperando {wait:.1f}s...")
-                time.sleep(wait)
-            return earliest_key, self._keys.index(earliest_key)
 
-    def _rotate(self) -> None:
-        """Avanza al siguiente índice en la cola circular."""
+        # Sleep FUERA del lock para no bloquear otros threads
+        if wait > 0:
+            time.sleep(wait)
+
         with self._lock:
-            self._current_idx = (self._current_idx + 1) % len(self._keys)
-            logger.info(
-                f"Rotando a key {self._current_idx} "
-                f"[{self._keys[self._current_idx].provider.value}]"
-            )
+            idx = self._keys.index(earliest)
+            self._current_idx = (idx + 1) % len(self._keys)
+            return earliest, idx
 
     def _call(self, key_obj: LLMKey, prompt: str) -> str:
         """Llama al adaptador correcto según el proveedor."""
-        model = os.getenv(
+        model  = os.getenv(
             f"{key_obj.provider.value.upper()}_MODEL",
             _DEFAULT_MODELS[key_obj.provider],
         )
@@ -379,19 +456,42 @@ class LLMClient:
 
 
 # ──────────────────────────────────────────────────────────────
-# Singleton global (lazy)
+# Singleton global (lazy, thread-safe)
 # ──────────────────────────────────────────────────────────────
-_client_instance: LLMClient | None = None
-_client_lock = threading.Lock()
+
+_client_instance: LLMClient | None  = None
+_client_error:    Exception | None  = None
+_client_lock                         = threading.Lock()
 
 
 def get_llm_client() -> LLMClient:
     """
     Retorna la instancia singleton del cliente LLM.
-    Thread-safe, se crea solo la primera vez que se llama.
+
+    FIX [CL6]: cachea el estado de error — si la primera creación falla
+    por falta de keys, los siguientes llamadores reciben el mismo error
+    inmediatamente en lugar de reintentar N veces en paralelo.
+    Para refrescar, llama a reset_llm_client() (útil en tests).
     """
-    global _client_instance
+    global _client_instance, _client_error
+
     with _client_lock:
-        if _client_instance is None:
+        if _client_instance is not None:
+            return _client_instance
+        if _client_error is not None:
+            raise _client_error
+
+        try:
             _client_instance = LLMClient()
-        return _client_instance
+            return _client_instance
+        except EnvironmentError as e:
+            _client_error = e
+            raise
+
+
+def reset_llm_client() -> None:
+    """Resetea el singleton (útil en tests o para recargar .env)."""
+    global _client_instance, _client_error
+    with _client_lock:
+        _client_instance = None
+        _client_error    = None

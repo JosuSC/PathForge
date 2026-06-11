@@ -14,155 +14,188 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 console = Console()
-
-# ────────────────────────────────────────────────────────────
-# Verificaciones
-# ────────────────────────────────────────────────────────────
-
-checks = []
+checks:  list[tuple] = []
 
 
 def check(name: str, func) -> None:
-    """Ejecuta una verificación."""
     try:
         result = func()
         checks.append((name, "✓", "green", result or "OK"))
     except Exception as e:
-        checks.append((name, "✗", "red", str(e)[:50]))
+        checks.append((name, "✗", "red", str(e)[:60]))
 
 
-# 1. Dependencias Python
-def verify_imports():
-    required_imports = [
+# ── 1. Dependencias Python ────────────────────────────────────
+
+def verify_imports() -> str:
+    # FIX [V1]: separar core obligatorias de opcionales
+    core_required = [
         "fastapi", "uvicorn", "websockets", "pydantic",
-        "sklearn", "networkx", "numpy", "pandas",
-        "loguru", "rich", "dotenv"
+        "sklearn", "networkx", "numpy",
+        "loguru", "rich", "dotenv",
     ]
+    llm_optional = ["google.genai", "anthropic", "openai"]
+    data_optional = ["datasets", "pandas"]
 
-    optional_imports = ["google.genai", "anthropic", "openai"]
-
-    missing = []
-    for imp in required_imports:
+    missing_core = []
+    for imp in core_required:
         try:
             __import__(imp)
         except ImportError:
-            missing.append(imp)
+            missing_core.append(imp)
 
-    optional_missing = []
-    for imp in optional_imports:
-        try:
-            __import__(imp)
-        except ImportError:
-            optional_missing.append(imp)
+    if missing_core:
+        raise ImportError(f"Faltan dependencias core: {', '.join(missing_core)}")
 
-    if missing:
-        raise ImportError(f"Missing required: {', '.join(missing[:4])}")
+    missing_llm  = [i for i in llm_optional  if not _can_import(i)]
+    missing_data = [i for i in data_optional if not _can_import(i)]
 
-    if optional_missing:
-        return (
-            f"{len(required_imports)}/{len(required_imports)} required OK | "
-            f"optional missing: {', '.join(optional_missing)}"
-        )
-
-    return f"{len(required_imports)}/{len(required_imports)} required imports OK"
+    parts = [f"{len(core_required)}/{len(core_required)} core OK"]
+    if missing_llm:
+        parts.append(f"LLM opcionales sin instalar: {', '.join(missing_llm)}")
+    if missing_data:
+        parts.append(f"Data opcionales: {', '.join(missing_data)} (solo para download_data.py)")
+    return " | ".join(parts)
 
 
-# 2. Módulos del proyecto
-def verify_core_modules():
+def _can_import(module: str) -> bool:
+    try:
+        __import__(module)
+        return True
+    except ImportError:
+        return False
+
+
+# ── 2. Módulos del proyecto ───────────────────────────────────
+
+def verify_core_modules() -> str:
     modules = [
-        "backend.core.simulation",
-        "backend.core.generator",
         "backend.core.graph",
+        "backend.core.generator",
+        "backend.core.evaluator",
+        "backend.core.constraints",
+        "backend.core.scorer",
+        "backend.core.simulation",
         "backend.data.loader",
         "backend.data.input_manager",
-        "backend.llm.prompts",
-        "backend.llm.analyzer",
         "backend.llm.client",
+        "backend.llm.analyzer",
+        "backend.llm.prompts",
     ]
-    ok = 0
-    for mod in modules:
-        try:
-            __import__(mod)
-            ok += 1
-        except:
-            pass
-    return f"{ok}/{len(modules)} modules found"
+    ok = sum(1 for m in modules if _can_import(m))
+    if ok < len(modules):
+        raise ImportError(f"Solo {ok}/{len(modules)} módulos encontrados")
+    return f"{ok}/{len(modules)} módulos OK"
 
 
-# 3. Archivos clave
-def verify_files():
+# ── 3. Archivos clave ─────────────────────────────────────────
+
+def verify_files() -> str:
     files = [
         "backend/main_api.py",
+        "backend/data/careers.json",
         "backend/data/input_manager.py",
         "main.py",
         "frontend/index.html",
         "frontend/js/websocket.js",
+        ".env.example",
     ]
-    root = Path(__file__).parent
+    root  = Path(__file__).parent
     found = sum(1 for f in files if (root / f).exists())
-    return f"{found}/{len(files)} files exist"
+    if found < len(files):
+        missing = [f for f in files if not (root / f).exists()]
+        return f"{found}/{len(files)} archivos OK | Faltan: {', '.join(missing)}"
+    return f"{found}/{len(files)} archivos OK"
 
 
-# 4. Base de datos
-def verify_database():
+# ── 4. Base de datos ──────────────────────────────────────────
+
+def verify_database() -> str:
     from backend.data.input_manager import InputManager
     manager = InputManager()
-    inputs = manager.list_inputs()
-    return f"{len(inputs)} inputs in DB"
+    inputs  = manager.list_inputs()
+    return f"SQLite operativa | {len(inputs)} configuraciones guardadas"
 
 
-# 5. Configuración LLM
-def verify_llm_setup():
+# ── 5. Configuración LLM ─────────────────────────────────────
+
+def verify_llm_setup() -> str:
     import os
     from dotenv import load_dotenv
     load_dotenv()
-    env_keys = [k for k in os.environ if k.startswith("LLM_")]
-    return f"{len(env_keys)} LLM keys configured" if env_keys else "⚠️  No LLM keys (check .env)"
+    # FIX [V2]: filtrar SOLO LLM_KEY_N, no otras variables LLM_*
+    env_keys = [k for k in os.environ if k.startswith("LLM_KEY_")]
+    if not env_keys:
+        return "⚠️  Sin keys LLM (configura .env con LLM_KEY_1=proveedor:key)"
+    return f"{len(env_keys)} key(s) configurada(s): {', '.join(sorted(env_keys))}"
 
 
-# 6. Grafo de carrera
-def verify_graph():
+# ── 6. Grafo de carreras ──────────────────────────────────────
+
+def verify_graph() -> str:
     from backend.data.loader import load_career_graph
     from backend.core.graph import CareerGraph
-    G = load_career_graph()
-    graph = CareerGraph(G)
-    nodes = graph.all_node_ids()
 
-    # Terminal = nodo sin salidas (out-degree 0)
-    terminal_count = sum(1 for n in nodes if len(graph.successors(n)) == 0)
-    return f"{len(nodes)} career nodes, {terminal_count} terminals"
+    G         = load_career_graph()
+    graph     = CareerGraph(G)
+    nodes     = graph.all_node_ids()
+    terminals = graph.terminal_nodes()
 
-
-# 7. Predictor ML
-def verify_predictor():
-    from backend.core.scorer import CareerOutcomePredictor
-    p = CareerOutcomePredictor.load_or_train()
-    return f"Model score: {round(p.cv_score, 3)}"
-
-
-# ────────────────────────────────────────────────────────────
-# Ejecutar verificaciones
-# ────────────────────────────────────────────────────────────
-
-def main():
-    console.print(
-        Text("\n🔍 PathForge Installation Verification\n", style="bold cyan")
+    # Verificar campos v2
+    sample_scores = graph.score_trajectory(("junior_dev", "mid_dev", "senior_dev"))
+    has_v2_fields = (
+        "is_terminal_end" in sample_scores
+        and "transition_probability_score" in sample_scores
     )
 
-    check("Python Imports", verify_imports)
-    check("Core Modules", verify_core_modules)
-    check("Project Files", verify_files)
-    check("Database (SQLite)", verify_database)
-    check("LLM Configuration", verify_llm_setup)
-    check("Career Graph", verify_graph)
-    check("ML Predictor", verify_predictor)
+    return (
+        f"{len(nodes)} nodos | {len(terminals)} terminales | "
+        f"campos v2: {'✓' if has_v2_fields else '✗'}"
+    )
 
-    # Mostrar tabla
+
+# ── 7. Predictor ML ───────────────────────────────────────────
+
+def verify_predictor() -> str:
+    from backend.core.scorer import CareerOutcomePredictor
+    p = CareerOutcomePredictor.load_or_train()
+    top = max(p.feature_importances, key=p.feature_importances.get) if p.feature_importances else "N/A"
+    return f"CV AUC={p.cv_score:.3f} | Top feature: {top}"
+
+
+# ── 8. Domain graphs (opcional) ───────────────────────────────
+
+def verify_domain_graphs() -> str:
+    from backend.data.loader import list_available_domains
+    domains = list_available_domains()
+    if not domains:
+        return "Sin domain graphs (ejecuta python backend/data/transform_data.py)"
+    return f"{len(domains)} domain graphs disponibles"
+
+
+# ────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    console.print(Text("\n🔍 PathForge — Verificación de Instalación\n", style="bold cyan"))
+
+    check("Dependencias Python",   verify_imports)
+    check("Módulos del proyecto",  verify_core_modules)
+    check("Archivos del proyecto", verify_files)
+    check("Base de datos SQLite",  verify_database)
+    check("Configuración LLM",     verify_llm_setup)
+    check("Grafo de carreras",     verify_graph)
+    check("Modelo ML (sklearn)",   verify_predictor)
+    check("Domain graphs",         verify_domain_graphs)
+
     table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Component", style="cyan")
-    table.add_column("Status")
-    table.add_column("Details", style="dim")
+    table.add_column("Componente", style="cyan", min_width=25)
+    table.add_column("Estado",     width=4)
+    table.add_column("Detalle",    style="dim")
 
     failed = 0
     for name, status, color, details in checks:
@@ -173,12 +206,12 @@ def main():
     console.print(table)
 
     if failed == 0:
-        console.print("\n[green]✓ All components verified successfully![/green]")
-        console.print("[dim]Ready to use: python main.py train[/dim]\n")
+        console.print("\n[bold green]✓ Todos los componentes verificados[/bold green]")
+        console.print("[dim]Siguiente paso: python main.py server[/dim]\n")
         return 0
     else:
-        console.print(f"\n[red]✗ {failed} component(s) failed verification[/red]")
-        console.print("[yellow]Check errors above and fix before proceeding[/yellow]\n")
+        console.print(f"\n[red]✗ {failed} componente(s) con error[/red]")
+        console.print("[yellow]Revisa los errores y ejecuta: pip install -r requirements.txt[/yellow]\n")
         return 1
 
 

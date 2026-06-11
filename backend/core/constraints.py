@@ -3,10 +3,6 @@ core/constraints.py
 -------------------
 Define y evalúa restricciones sobre trayectorias profesionales.
 
-Separar restricciones del algoritmo de búsqueda permite:
-- Agregar/quitar restricciones sin tocar el generador
-- Testear cada restricción de forma independiente
-- Combinar restricciones con operadores lógicos (AND, OR)
 """
 
 from __future__ import annotations
@@ -14,6 +10,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol
+
+# FIX [C2]: constante compartida — importada por graph.py y main_api.py también
+DEFAULT_MAX_YEARS: int = 12
 
 
 # ---------------------------------------------------------------------------
@@ -38,18 +37,7 @@ class Constraint(ABC):
         self,
         path: tuple[str, ...],
         graph: GraphProtocol,
-    ) -> bool:
-        """
-        Evalúa si el camino parcial o completo satisface la restricción.
-
-        Args:
-            path: Secuencia de IDs de nodos (puede ser parcial).
-            graph: Grafo sobre el que opera.
-
-        Returns:
-            True si la restricción se cumple.
-        """
-        ...
+    ) -> bool: ...
 
     def __and__(self, other: "Constraint") -> "AndConstraint":
         return AndConstraint(self, other)
@@ -67,7 +55,7 @@ class Constraint(ABC):
 
 @dataclass
 class AndConstraint(Constraint):
-    left: Constraint
+    left:  Constraint
     right: Constraint
 
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
@@ -79,7 +67,7 @@ class AndConstraint(Constraint):
 
 @dataclass
 class OrConstraint(Constraint):
-    left: Constraint
+    left:  Constraint
     right: Constraint
 
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
@@ -102,8 +90,9 @@ class MaxYearsConstraint(Constraint):
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if len(path) < 2:
             return True
+        # FIX [C1]: .get() con default 0 — no lanza KeyError en aristas legacy
         total = sum(
-            graph.edge_attrs(path[i], path[i + 1])["transition_years"]
+            graph.edge_attrs(path[i], path[i + 1]).get("transition_years", 0)
             for i in range(len(path) - 1)
         )
         return total <= self.max_years
@@ -121,8 +110,9 @@ class MaxRiskConstraint(Constraint):
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if len(path) < 2:
             return True
+        # FIX [C1]: .get() con default 0.0
         risks = [
-            graph.edge_attrs(path[i], path[i + 1])["risk"]
+            graph.edge_attrs(path[i], path[i + 1]).get("risk", 0.0)
             for i in range(len(path) - 1)
         ]
         return (sum(risks) / len(risks)) <= self.max_risk
@@ -140,7 +130,8 @@ class MinSalaryConstraint(Constraint):
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if not path:
             return True
-        final_salary = graph.node_attrs(path[-1])["avg_salary"]
+        # FIX [C1]: .get() con default seguro
+        final_salary = graph.node_attrs(path[-1]).get("avg_salary", 0.0)
         return final_salary >= self.min_salary
 
     def __repr__(self) -> str:
@@ -169,8 +160,9 @@ class MaxDifficultyConstraint(Constraint):
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if len(path) < 2:
             return True
+        # FIX [C1]: .get() con default 0.0
         diffs = [
-            graph.edge_attrs(path[i], path[i + 1])["difficulty"]
+            graph.edge_attrs(path[i], path[i + 1]).get("difficulty", 0.0)
             for i in range(len(path) - 1)
         ]
         return (sum(diffs) / len(diffs)) <= self.max_difficulty
@@ -197,10 +189,7 @@ class RequiredNodeConstraint(Constraint):
 # ---------------------------------------------------------------------------
 
 class ConstraintProfiles:
-    """
-    Perfiles de restricciones listos para usar en experimentos.
-    Cada perfil combina restricciones que representan un tipo de usuario.
-    """
+    """Perfiles de restricciones listos para usar en experimentos."""
 
     @staticmethod
     def conservative() -> Constraint:
@@ -213,8 +202,8 @@ class ConstraintProfiles:
         return MinSalaryConstraint(70_000) & MinLengthConstraint(2)
 
     @staticmethod
-    def balanced(max_years: int = 10) -> Constraint:
-        """Usuario que busca equilibrio entre riesgo, tiempo y salario."""
+    def balanced(max_years: int = DEFAULT_MAX_YEARS) -> Constraint:
+        """FIX [C2]: usa DEFAULT_MAX_YEARS=12 sincronizado con el resto del sistema."""
         return (
             MaxYearsConstraint(max_years)
             & MaxRiskConstraint(0.50)

@@ -3,18 +3,16 @@ backend/data/input_manager.py
 -----------------------------
 Gestor de inputs de usuario (carrera profesional + decisiones) con BD SQLite.
 
-Permite:
-  - Guardar/cargar configuraciones de usuario predefinidas
-  - Análisis previo de inputs antes de exploración
-  - Sugerencias de IA en tiempo real
-  - Presets para pruebas rápidas
+- UserInput incluye domain_id (antes se perdía al persistir desde main_api)
+- Schema SQLite actualizado con columna domain_id
+- PRESET_INPUTS documentados como específicos del grafo default (careers.json)
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -41,6 +39,8 @@ class UserInput:
     use_simulation: bool = True
     user_profile_description: str = "profesional de tecnología"
     notes: str = ""
+    # FIX [06]: domain_id persistido correctamente (antes se perdía en POST /api/inputs/create)
+    domain_id: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -60,7 +60,7 @@ class InputManager:
         self._init_db()
 
     def _init_db(self) -> None:
-        """Inicializa la BD si no existe."""
+        """Inicializa la BD y aplica migraciones si faltan columnas."""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
@@ -77,10 +77,18 @@ class InputManager:
                 use_simulation INTEGER DEFAULT 1,
                 user_profile_description TEXT DEFAULT 'profesional de tecnología',
                 notes TEXT DEFAULT '',
+                domain_id TEXT DEFAULT NULL,
                 created_at TEXT,
                 updated_at TEXT
             )
         """)
+
+        # Migración defensiva: añadir domain_id si la BD ya existía sin esa columna
+        c.execute("PRAGMA table_info(user_inputs)")
+        existing_cols = {row[1] for row in c.fetchall()}
+        if "domain_id" not in existing_cols:
+            c.execute("ALTER TABLE user_inputs ADD COLUMN domain_id TEXT DEFAULT NULL")
+            logger.info("Migración: columna domain_id añadida a user_inputs")
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS ai_suggestions (
@@ -109,10 +117,10 @@ class InputManager:
 
         c.execute("""
             INSERT OR REPLACE INTO user_inputs
-            (id, source_career, profile, max_years, max_risk, beam_width, 
+            (id, source_career, profile, max_years, max_risk, beam_width,
              max_depth, top_k, use_simulation, user_profile_description, notes,
-             created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             domain_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_input.id,
             user_input.source_career,
@@ -125,6 +133,7 @@ class InputManager:
             int(user_input.use_simulation),
             user_input.user_profile_description,
             user_input.notes,
+            user_input.domain_id,
             user_input.created_at,
             user_input.updated_at,
         ))
@@ -156,8 +165,9 @@ class InputManager:
             use_simulation=bool(row[8]),
             user_profile_description=row[9],
             notes=row[10],
-            created_at=row[11],
-            updated_at=row[12],
+            domain_id=row[11] if len(row) > 11 else None,
+            created_at=row[12] if len(row) > 12 else "",
+            updated_at=row[13] if len(row) > 13 else "",
         )
 
     def list_inputs(self) -> list[UserInput]:
@@ -181,8 +191,9 @@ class InputManager:
                 use_simulation=bool(row[8]),
                 user_profile_description=row[9],
                 notes=row[10],
-                created_at=row[11],
-                updated_at=row[12],
+                domain_id=row[11] if len(row) > 11 else None,
+                created_at=row[12] if len(row) > 12 else "",
+                updated_at=row[13] if len(row) > 13 else "",
             )
             for row in rows
         ]
@@ -214,7 +225,8 @@ class InputManager:
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         c.execute(
-            "SELECT suggestion, type, created_at FROM ai_suggestions WHERE input_id = ? ORDER BY created_at DESC",
+            "SELECT suggestion, type, created_at FROM ai_suggestions "
+            "WHERE input_id = ? ORDER BY created_at DESC",
             (input_id,)
         )
         rows = c.fetchall()
@@ -242,12 +254,16 @@ class InputManager:
 
 # ──────────────────────────────────────────────────────────────
 # Presets por defecto
+# FIX [07]: domain_id=None explícito — estos presets son específicos del grafo
+#           default (careers.json). Para domain graphs, crea tus propios inputs
+#           con el domain_id correspondiente.
 # ──────────────────────────────────────────────────────────────
 
 PRESET_INPUTS = [
     UserInput(
         id="preset_junior_conservative",
         source_career="junior_dev",
+        domain_id=None,  # careers.json (grafo default)
         profile="conservative",
         max_years=8,
         max_risk=0.3,
@@ -257,6 +273,7 @@ PRESET_INPUTS = [
     UserInput(
         id="preset_senior_ambitious",
         source_career="senior_dev",
+        domain_id=None,  # careers.json (grafo default)
         profile="ambitious",
         max_years=10,
         max_risk=0.8,
@@ -268,11 +285,12 @@ PRESET_INPUTS = [
     UserInput(
         id="preset_data_scientist",
         source_career="data_scientist",
+        domain_id=None,  # careers.json (grafo default)
         profile="balanced",
         max_years=12,
         max_risk=0.6,
         user_profile_description="Data Scientist buscando equilibrio",
-        notes="Prueba: perfile equilibrado con IA"
+        notes="Prueba: perfil equilibrado con IA"
     ),
 ]
 
