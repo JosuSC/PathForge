@@ -48,13 +48,17 @@ class TrajectoryGenerator:
         graph: CareerGraph,
         config: GeneratorConfig | None = None,
     ) -> None:
+        # Validar que el grafo sea válido ANTES de leer sus atributos
+        if not hasattr(graph, '_max_salary'):
+            raise TypeError("El grafo debe implementar los métodos y atributos de CareerGraph")
+        
         self._graph     = graph
         self._config    = config or GeneratorConfig()
         self._evaluator = TrajectoryEvaluator(graph)
-        # FIX [GEN3]: max_salary dinámico, no hardcoded a 180_000
+        # Max_salary dinámico, no hardcoded a 180_000
         self._max_salary: float = graph._max_salary or 180_000
 
-        # FIX [GEN1]: verificar que el grafo tiene la interfaz que Constraint necesita
+        # Verificar que el grafo tiene la interfaz que Constraint necesita
         for method in ("node_attrs", "edge_attrs", "has_edge"):
             if not callable(getattr(graph, method, None)):
                 raise TypeError(

@@ -148,7 +148,7 @@ def test_career_graph() -> None:
     assert "cto" in terminals, "cto debería ser nodo terminal"
     console.print(f"[green]✓ Terminales: {terminals}[/green]")
 
-    scores = graph.score_trajectory(("junior_dev", "mid_dev", "senior_dev", "cto"))
+    scores = graph.score_trajectory(("junior_dev", "mid_dev", "senior_dev", "tech_lead", "cto"))
     assert "is_terminal_end"             in scores, "Falta is_terminal_end [FIX G1]"
     assert "transition_probability_score" in scores, "Falta transition_probability_score [FIX G3]"
     assert scores["is_terminal_end"] == 1.0,         "cto debe ser terminal"
