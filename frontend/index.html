@@ -93,9 +93,15 @@
       <div class="fsec">
         <div class="stitle">Star Nodes (Career Roles)</div>
         <div class="node-list" id="node-list"></div>
+        <div class="fg" style="margin-bottom:6px">
+          <label class="lbl">🌐 Load Domain Graph</label>
+          <select class="sel" id="domain-sel" onchange="onDomainChange()" style="font-size:0.82rem">
+            <option value="">— Default (careers.json) —</option>
+          </select>
+        </div>
         <div class="btn-row">
           <button class="btn btn-c btn-sm" style="flex:1" onclick="openModal('modal-node')">+ Add Star</button>
-          <button class="btn btn-c btn-sm" style="flex:1" onclick="loadDefault()">Load Default</button>
+          <button class="btn btn-c btn-sm" style="flex:1" onclick="loadDefault()">↺ Reset Default</button>
         </div>
       </div>
       <div class="fsec">

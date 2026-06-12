@@ -15,7 +15,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -43,6 +43,7 @@ _career_graph: CareerGraph | None = None
 _predictor:    CareerOutcomePredictor | None = None
 _simulator:    CareerSimulator | None = None
 _domain_graphs: dict[str, CareerGraph] = {}
+_startup_domain: str | None = None   # set by main.py --domain
 
 
 def _group_by_terminal(results: list) -> dict[str, list]:
@@ -66,6 +67,12 @@ def _init_components() -> None:
 
 
 # FIX [10]: lifespan reemplaza el deprecated @app.on_event("startup")
+def set_startup_domain(domain_id: str | None) -> None:
+    """Called by main.py before uvicorn.run() to preselect a domain."""
+    global _startup_domain
+    _startup_domain = domain_id
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
@@ -201,8 +208,30 @@ def traj_to_dict(et) -> dict:
 
 @app.get("/")
 async def serve_frontend():
+    """
+    Sirve index.html con configuración de inicio inyectada como window.__PATHFORGE_CONFIG__.
+    Soporta:
+      --domain <id>  → preselecciona ese domain graph al arrancar la UI
+      --empty        → arranca sin grafo (domain_id = '__empty__')
+    """
     index = FRONTEND_DIR / "index.html"
-    return FileResponse(str(index)) if index.exists() else {"message": "PathForge API v5.0"}
+    if not index.exists():
+        return {"message": "PathForge API v5.0"}
+
+    html = index.read_text(encoding="utf-8")
+
+    # Inyectar config antes del cierre de </head>
+    config = {
+        "startup_domain": _startup_domain,   # None | "__empty__" | "assembly" etc.
+    }
+    import json as _json
+    config_script = (
+        '<script>' + chr(10) +
+        '  window.__PATHFORGE_CONFIG__ = ' + _json.dumps(config) + ';' + chr(10) +
+        '</script>' + chr(10)
+    )
+    html = html.replace("</head>", config_script + "</head>", 1)
+    return HTMLResponse(content=html)
 
 
 @app.get("/api/domains")

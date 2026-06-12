@@ -16,15 +16,16 @@ import json
 import sys
 import time
 from pathlib import Path
+import argparse
 
-# FIX [R1]: bootstrap de sys.path — mismo patrón que run_experiments.py
+# Bootstrap de sys.path — mismo patrón que run_experiments.py
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from loguru import logger
 
-# FIX [R5]: importación condicional de rich — no rompe si no está instalado
+# Importación condicional de rich — no rompe si no está instalado
 try:
     from rich.console import Console
     from rich.progress import track
@@ -37,7 +38,7 @@ except ImportError:
         """Fallback sin rich: itera normalmente."""
         return iterable
 
-# FIX [R1]: importaciones absolutas con prefijo backend
+# Importaciones absolutas con prefijo backend
 from backend.core.constraints import ConstraintProfiles, Constraint
 from backend.core.generator import GeneratorConfig, TrajectoryGenerator
 from backend.core.graph import CareerGraph
@@ -47,7 +48,7 @@ from backend.experiments.metrics import ExperimentMetrics, compute_metrics
 
 
 # ---------------------------------------------------------------------------
-# FIX [R4]: directorio de resultados unificado con run_experiments.py
+# Directorio de resultados unificado con run_experiments.py
 # ---------------------------------------------------------------------------
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -82,64 +83,102 @@ DEFAULT_SOURCE_NODES = [
 def _load_graph_and_sources(
     domain_id: str | None,
     predictor: CareerOutcomePredictor,
-) -> tuple[CareerGraph, list[str]]:
+    instances_path: Path | None = None,
+) -> tuple[CareerGraph, list[dict]]:
     """
-    Carga el grafo correcto y determina SOURCE_NODES dinámicamente.
-
-    - Sin domain_id: grafo default (careers.json) + DEFAULT_SOURCE_NODES.
-    - Con domain_id: domain graph + nodos de tipo 'entry' del grafo.
+    Carga el grafo y retorna:
+    - Si instances_path existe: (graph, lista de instancias desde el archivo)
+    - Si no: (graph, lista de instancias auto-generadas)
     """
+    # 1. Cargar el grafo
     if domain_id:
         raw_graph = load_domain_graph(domain_id)
-        graph     = CareerGraph(raw_graph, outcome_predictor=predictor)
-        # Nodos 'entry' del domain graph como puntos de partida
+        graph = CareerGraph(raw_graph, outcome_predictor=predictor)
+    else:
+        raw_graph = load_career_graph()
+        graph = CareerGraph(raw_graph, outcome_predictor=predictor)
+
+    # 2. Si hay archivo de instancias, usarlo
+    if instances_path is not None and instances_path.exists():
+        logger.info(f"Cargando instancias desde {instances_path}")
+        instances = json.loads(instances_path.read_text(encoding="utf-8"))
+        return graph, instances
+
+    # 3. No hay archivo -> generar instancias automáticas
+    if domain_id:
+        # Obtener source_nodes solo si es necesario
         source_nodes = [
             nid for nid in graph.all_node_ids()
             if graph.node_attrs(nid).get("type") == "entry"
-        ][:4]   # máximo 4 para mantener el mismo número que el default
+        ][:4]
         if not source_nodes:
-            # Fallback: primeros 4 nodos si no hay 'entry' explícito
             source_nodes = graph.all_node_ids()[:4]
-        logger.info(
-            f"Domain graph '{domain_id}': {len(graph.all_node_ids())} nodos, "
-            f"source_nodes={source_nodes}"
-        )
+        logger.info(f"Domain graph '{domain_id}': source_nodes={source_nodes}")
     else:
-        raw_graph    = load_career_graph()
-        graph        = CareerGraph(raw_graph, outcome_predictor=predictor)  # FIX [R3]
         source_nodes = DEFAULT_SOURCE_NODES
 
-    return graph, source_nodes
+    auto_instances = []
+    for source in source_nodes:
+        for profile_name in CONSTRAINT_PROFILES:
+            auto_instances.append({
+                "source_career": source,
+                "profile": profile_name,
+            })
+    return graph, auto_instances
 
 
 def run_all_experiments(
     domain_id: str | None = None,
+    instances_path: Path | None = None,
 ) -> list[ExperimentMetrics]:
     """
     Ejecuta todas las combinaciones del experimento y guarda resultados.
 
+    Si se proporciona instances_path, carga las instancias desde ese archivo.
+    Cada instancia es un dict con:
+        - "source_career": str
+        - "profile": str (nombre del perfil, ej. "balanced")
+        - "beam_width": int (opcional)
+        - "max_depth": int (opcional)
+
     Args:
         domain_id: Si se pasa, usa ese domain graph en lugar de careers.json.
-                   Permite experimentar con cualquier dominio real.
+        instances_path: Ruta al archivo JSON con instancias.
 
-    Total de ejecuciones:
-        4 configs × 4 perfiles × 4 fuentes = 64 experimentos
+    Returns:
+        Lista de métricas de cada experimento completado.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # FIX [R3]: predictor instanciado como en main_api.py
     logger.info("Cargando modelo ML...")
     predictor = CareerOutcomePredictor.load_or_train()
 
-    graph, source_nodes = _load_graph_and_sources(domain_id, predictor)
+    # Carga el grafo y las instancias (auto-generadas o desde archivo)
+    graph, instances = _load_graph_and_sources(domain_id, predictor, instances_path)
 
     all_metrics: list[ExperimentMetrics] = []
-    combinations = [
-        (cfg_name, cfg, prof_name, prof, source)
-        for cfg_name, cfg in GENERATOR_CONFIGS.items()
-        for prof_name, prof in CONSTRAINT_PROFILES.items()
-        for source in source_nodes
-    ]
+    combinations = []
+
+    # Perfil por defecto por si el nombre no existe
+    default_profile = ConstraintProfiles.balanced()
+
+    for inst in instances:
+        source = inst["source_career"]
+        profile_name = inst.get("profile", "balanced")
+        # Obtener el objeto ConstraintProfile
+        prof = CONSTRAINT_PROFILES.get(profile_name, default_profile)
+
+        # Caso 1: instancia define sus propios parámetros de generación
+        bw = inst.get("beam_width")
+        md = inst.get("max_depth")
+        if bw is not None and md is not None:
+            cfg = GeneratorConfig(beam_width=bw, max_depth=md, top_k_results=10)
+            cfg_name = f"bw{bw}_md{md}"
+            combinations.append((cfg_name, cfg, profile_name, prof, source))
+        else:
+            # Caso 2: usar todas las configuraciones globales
+            for cfg_name, cfg in GENERATOR_CONFIGS.items():
+                combinations.append((cfg_name, cfg, profile_name, prof, source))
 
     total = len(combinations)
     logger.info(f"Iniciando {total} experimentos...")
@@ -150,7 +189,6 @@ def run_all_experiments(
         experiment_id = f"{cfg_name}__{prof_name}__{source}"
 
         try:
-            # Verificar que el nodo existe antes de lanzar el generador
             if source not in graph.all_node_ids():
                 logger.warning(
                     f"Nodo '{source}' no existe en el grafo. "
@@ -162,6 +200,12 @@ def run_all_experiments(
 
             start      = time.perf_counter()
             results    = generator.generate(source=source, constraints=prof)
+            
+            # Si no hay trayectorias, saltar el cálculo de métricas
+            if not results:
+                logger.warning(f"Sin trayectorias generadas para {experiment_id}. Saltando métricas.")
+                continue
+                
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             metrics = compute_metrics(
@@ -176,9 +220,10 @@ def run_all_experiments(
         except Exception as exc:
             logger.warning(f"Experimento {experiment_id} falló: {exc}")
 
-    # Guardar resultados en JSON (FIX [R4]: mismo RESULTS_DIR)
-    output_path = RESULTS_DIR / "experiment_results.json"
-    data        = [m.to_dict() for m in all_metrics]
+    # Guardar resultados en JSON e Incluir el nombre del dominio en el archivo
+    filename = f"experiment_results_{domain_id}.json" if domain_id else "experiment_results.json"
+    output_path = RESULTS_DIR / filename
+    data = [m.to_dict() for m in all_metrics]
     output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.success(
         f"Resultados guardados en {output_path} "
@@ -208,7 +253,7 @@ def _print_summary(metrics: list[ExperimentMetrics]) -> None:
     _rich_print("\n[bold cyan]═══ RESUMEN EXPERIMENTAL ═══[/bold cyan]")
     _rich_print(f"  Experimentos completados: [green]{len(metrics)}[/green]")
 
-    # FIX [R6]: max/min protegidos — metrics ya verificado no vacío arriba
+    # max/min protegidos — metrics ya verificado no vacío arriba
     best_diversity = max(metrics, key=lambda m: m.diversity_score)
     best_pareto    = max(metrics, key=lambda m: m.pareto_front_size)
     fastest        = min(metrics, key=lambda m: m.execution_time_ms)
@@ -236,13 +281,22 @@ def _print_summary(metrics: list[ExperimentMetrics]) -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="PathForge — Diseño Experimental")
+    
     parser.add_argument(
         "--domain", type=str, default=None,
         help="ID del domain graph a usar (ej: software_development). "
              "Por defecto usa careers.json."
     )
+    parser.add_argument(
+        "--instances", type=str, default=None,
+        help="Ruta al archivo JSON con instancias personalizadas. "
+             "Si no se pasa, se usan las instancias por defecto."
+    )
+    
     args = parser.parse_args()
-    run_all_experiments(domain_id=args.domain)
+
+    # Conversión segura a Path
+    inst_path = Path(args.instances) if args.instances else None
+    
+    run_all_experiments(domain_id=args.domain, instances_path=inst_path)

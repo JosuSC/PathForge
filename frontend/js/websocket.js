@@ -27,6 +27,24 @@ const API = (() => {
         }
     }
 
+    async function listDomains() {
+        try {
+            const r = await fetch(`${BASE}/api/domains`);
+            return r.ok ? r.json() : null;
+        } catch { return null; }
+    }
+
+    async function loadDomainGraph(domainId) {
+        try {
+            const r = await fetch(`${BASE}/api/domains/${encodeURIComponent(domainId)}/graph`);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.json();
+        } catch (e) {
+            console.warn('Domain graph load failed:', e.message);
+            return null;
+        }
+    }
+
     async function getModelInfo() {
         try { const r = await fetch(`${BASE}/api/model/info`); return r.ok ? r.json() : null; }
         catch { return null; }
@@ -201,7 +219,8 @@ const API = (() => {
     }
 
     return {
-        loadDefaultGraph, analyze, getLLMStatus, getModelInfo,
+        loadDefaultGraph, listDomains, loadDomainGraph,
+        analyze, getLLMStatus, getModelInfo,
         createInput, listInputs, getInput, deleteInput,
         exploreWSRaw, exploreWS
     };

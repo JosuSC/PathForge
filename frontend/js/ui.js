@@ -208,29 +208,47 @@ function removeEdge(i) {
 }
 
 // ── Default graph ─────────────────────────────────────────────
-async function loadDefault() {
-    let data = await API.loadDefaultGraph();
-    if (!data) {
-        data = _getEmbeddedDefaultData();
-    }
-
+function _applyGraphData(data, domainLabel) {
     AppState.nodes = data.nodes.map(n => ({
         id: n.id, label: n.label, avg_salary: n.avg_salary,
         demand: n.demand, satisfaction: n.satisfaction,
         years_experience: n.years_experience, skills: n.skills || [],
         type: n.type || 'role',
     }));
-    AppState.edges = data.edges.map(e => ({
+    AppState.edges = (data.edges || []).map(e => ({
         from_node: e.from || e.from_node,
         to_node: e.to || e.to_node,
         transition_years: e.transition_years,
         difficulty: e.difficulty,
         risk: e.risk,
     }));
-
     renderNodeList(); renderEdgeList(); Preview.draw(); updateStats();
+    // Set first entry-type node as default source, fallback to first node
+    const entryNode = AppState.nodes.find(n => n.type === 'entry') || AppState.nodes[0];
+    if (entryNode) document.getElementById('src-sel').value = entryNode.id;
+    toast(domainLabel + ' loaded (' + AppState.nodes.length + ' nodes)', 'ok');
+}
+
+async function loadDefault() {
+    let data = await API.loadDefaultGraph();
+    if (!data) data = _getEmbeddedDefaultData();
+    _applyGraphData(data, 'Default career graph');
     document.getElementById('src-sel').value = 'junior_dev';
-    toast('Default career graph loaded', 'ok');
+}
+
+async function loadDomain(domainId) {
+    if (!domainId) { loadDefault(); return; }
+    toast('Loading domain: ' + domainId + '...', 'info');
+    const data = await API.loadDomainGraph(domainId);
+    if (!data || !data.nodes || !data.nodes.length) {
+        toast('Domain not found: ' + domainId, 'err');
+        loadDefault();
+        return;
+    }
+    _applyGraphData(data, domainId.replace(/_/g,' '));
+    // Update domain selector to reflect loaded domain
+    const sel = document.getElementById('domain-sel');
+    if (sel) sel.value = domainId;
 }
 
 // ── Exploration (asíncrona, espera que la vista esté lista) ──
@@ -674,6 +692,40 @@ function doZoom(d) { U3D.zoom(d); }
 function syncCrit(src) { const other = src === 'criterion' ? 'crit-disp' : 'criterion'; document.getElementById(other).value = document.getElementById(src).value; }
 
 // ── Init ──────────────────────────────────────────────────────
+// ── Domain Selector ──────────────────────────────────────────
+async function _initDomainSelector(activeDomain) {
+    const sel = document.getElementById('domain-sel');
+    if (!sel) return;
+    const result = await API.listDomains();
+    if (!result || !result.domains || !result.domains.length) {
+        sel.innerHTML = '<option value="">No domain graphs — run transform_data.py</option>';
+        return;
+    }
+    const grouped = {};
+    result.domains.forEach(d => {
+        const s = d.broad_sector || 'other';
+        if (!grouped[s]) grouped[s] = [];
+        grouped[s].push(d);
+    });
+    let html = '<option value="">— Default (careers.json) —</option>';
+    Object.keys(grouped).sort().forEach(sector => {
+        html += '<optgroup label="' + sector.replace(/_/g,' ').toUpperCase() + '">';
+        grouped[sector].sort((a,b) => a.id.localeCompare(b.id)).forEach(d => {
+            const isActive = d.id === activeDomain ? ' selected' : '';
+            html += '<option value="' + d.id + '"' + isActive + '>' +
+                    d.id.replace(/_/g,' ') + ' (' + d.nodes + ' nodes)</option>';
+        });
+        html += '</optgroup>';
+    });
+    sel.innerHTML = html;
+}
+
+function onDomainChange() {
+    const sel = document.getElementById('domain-sel');
+    const val = sel ? sel.value : '';
+    if (val) { loadDomain(val); } else { loadDefault(); }
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
     SpaceBG.init();
     Preview.init();
@@ -690,7 +742,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         const ld = document.getElementById('loading');
         ld.classList.add('out');
         setTimeout(() => ld.style.display = 'none', 800);
-        await loadDefault();
+        // Read startup config injected by main.py server --domain / --empty
+        const cfg = window.__PATHFORGE_CONFIG__ || {};
+        if (cfg.startup_domain === '__empty__') {
+            // Empty mode: clear everything, let user build from scratch
+            AppState.nodes = []; AppState.edges = [];
+            renderNodeList(); renderEdgeList(); Preview.draw(); updateStats();
+            toast('Empty mode — add nodes manually', 'info');
+        } else if (cfg.startup_domain) {
+            // Domain mode: load the specified domain graph
+            await loadDomain(cfg.startup_domain);
+        } else {
+            // Default: careers.json
+            await loadDefault();
+        }
+        // Populate domain selector
+        _initDomainSelector(cfg.startup_domain);
         const status = await API.getLLMStatus();
         if (status?.key_count > 0) toast(`${status.key_count} API key(s) · ${status.active_provider}`, 'ok');
     }, 1600);
