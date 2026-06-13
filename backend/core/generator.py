@@ -109,7 +109,7 @@ class TrajectoryGenerator:
                 logger.debug(f"Beam vacío en profundidad {depth}.")
                 break
 
-            # FIX [GEN2]: deduplicar antes de evaluar y seleccionar
+            # Deduplicar antes de evaluar y seleccionar
             candidates = list(dict.fromkeys(candidates))
 
             # Registrar trayectorias completadas
@@ -125,7 +125,7 @@ class TrajectoryGenerator:
                 f"beam={len(new_beam)}, completadas={len(completed)}"
             )
 
-            # FIX [GEN4]: callback recibe expanded Y selected para visualización completa
+            # Callback recibe expanded Y selected para visualización completa
             if step_callback and self._config.emit_steps:
                 step_callback(depth, candidates, list(new_beam), list(completed))
 
@@ -212,7 +212,7 @@ class TrajectoryGenerator:
         """
         attrs            = self._graph.node_attrs(node_id)
         successors_count = len(self._graph.successors(node_id))
-        # FIX [GEN3]: self._max_salary calculado dinámicamente en __init__
+        # Self._max_salary calculado dinámicamente en __init__
         salary_score     = attrs.get("avg_salary", 0) / max(self._max_salary, 1)
         branching_score  = min(successors_count / 5.0, 1.0)
         return 0.6 * salary_score + 0.4 * branching_score
