@@ -3,6 +3,9 @@ core/generator.py
 -----------------
 Genera trayectorias profesionales usando Beam Search multiobjetivo.
 
+FIX CRITICO: _pareto_score ahora protege contra pareto_rank=-1
+con max(1 + rank, 1), evitando ZeroDivisionError.
+FIX: _heuristic_potential usa max_salary dinamico del grafo.
 """
 
 from __future__ import annotations
@@ -18,12 +21,12 @@ from backend.core.graph import CareerGraph, Trajectory
 
 
 # ---------------------------------------------------------------------------
-# Configuración
+# Configuracion
 # ---------------------------------------------------------------------------
 
 @dataclass
 class GeneratorConfig:
-    """Parámetros del Beam Search."""
+    """Parametros del Beam Search."""
 
     beam_width:      int   = 10
     max_depth:       int   = 6
@@ -48,14 +51,14 @@ class TrajectoryGenerator:
         graph: CareerGraph,
         config: GeneratorConfig | None = None,
     ) -> None:
-        # Validar que el grafo sea válido ANTES de leer sus atributos
+        # Validar que el grafo sea valido ANTES de leer sus atributos
         if not hasattr(graph, '_max_salary'):
-            raise TypeError("El grafo debe implementar los métodos y atributos de CareerGraph")
-        
+            raise TypeError("El grafo debe implementar los metodos y atributos de CareerGraph")
+
         self._graph     = graph
         self._config    = config or GeneratorConfig()
         self._evaluator = TrajectoryEvaluator(graph)
-        # Max_salary dinámico, no hardcoded a 180_000
+        # Max_salary dinamico, no hardcoded a 180_000
         self._max_salary: float = graph._max_salary or 180_000
 
         # Verificar que el grafo tiene la interfaz que Constraint necesita
@@ -66,7 +69,7 @@ class TrajectoryGenerator:
                 )
 
     # ------------------------------------------------------------------
-    # API pública
+    # API publica
     # ------------------------------------------------------------------
 
     def generate(
@@ -77,7 +80,7 @@ class TrajectoryGenerator:
         step_callback=None,
     ) -> list[EvaluatedTrajectory]:
         """
-        Genera y evalúa trayectorias desde `source`.
+        Genera y evalua trayectorias desde `source`.
 
         Args:
             source:         ID del nodo de inicio.
@@ -85,7 +88,6 @@ class TrajectoryGenerator:
             target:         Nodo destino opcional.
             step_callback:  Callable(depth, expanded, selected_beam, completed)
                             para emitir pasos en tiempo real (WebSocket).
-                            FIX [GEN4]: recibe tanto expandidos como seleccionados.
 
         Returns:
             Lista de EvaluatedTrajectory ordenada por calidad (mejor primero).
@@ -106,7 +108,7 @@ class TrajectoryGenerator:
             candidates = self._expand_beam(beam, constraints, target)
 
             if not candidates:
-                logger.debug(f"Beam vacío en profundidad {depth}.")
+                logger.debug(f"Beam vacio en profundidad {depth}.")
                 break
 
             # Deduplicar antes de evaluar y seleccionar
@@ -121,11 +123,11 @@ class TrajectoryGenerator:
             new_beam = self._select_beam(candidates, constraints)
 
             logger.debug(
-                f"Depth {depth}: {len(candidates)} candidatos → "
+                f"Depth {depth}: {len(candidates)} candidatos -> "
                 f"beam={len(new_beam)}, completadas={len(completed)}"
             )
 
-            # Callback recibe expanded Y selected para visualización completa
+            # Callback recibe expanded Y selected para visualizacion completa
             if step_callback and self._config.emit_steps:
                 step_callback(depth, candidates, list(new_beam), list(completed))
 
@@ -136,7 +138,7 @@ class TrajectoryGenerator:
             if len(path) >= self._config.min_depth:
                 completed.add(path)
 
-        logger.info(f"Trayectorias únicas: {len(completed)}")
+        logger.info(f"Trayectorias unicas: {len(completed)}")
 
         trajectories = [Trajectory(nodes=p) for p in completed]
         evaluated    = self._evaluator.evaluate_all(trajectories)
@@ -154,7 +156,7 @@ class TrajectoryGenerator:
     ) -> list[tuple[str, ...]]:
         """
         Expande cada camino del beam. Evita ciclos y aplica poda por
-        restricciones en tiempo de expansión (branch-and-bound).
+        restricciones en tiempo de expansion (branch-and-bound).
         """
         expanded: list[tuple[str, ...]] = []
 
@@ -180,7 +182,7 @@ class TrajectoryGenerator:
         candidates: list[tuple[str, ...]],
         constraints: Constraint | None,
     ) -> list[tuple[str, ...]]:
-        """Selecciona los mejores K candidatos por Pareto + heurística."""
+        """Selecciona los mejores K candidatos por Pareto + heuristica."""
         if len(candidates) <= self._config.beam_width:
             return candidates
 
@@ -201,18 +203,22 @@ class TrajectoryGenerator:
 
     @staticmethod
     def _pareto_score(et: EvaluatedTrajectory) -> float:
-        rank_score = 1.0 / (1.0 + et.pareto_rank)
+        """
+        FIX CRITICO: Proteccion contra pareto_rank=-1.
+        Si rank=-1, 1.0/(1+(-1)) = 1.0/0 = ZeroDivisionError.
+        Ahora usamos max(1 + rank, 1) para evitarlo.
+        """
+        rank_score = 1.0 / max(1.0 + et.pareto_rank, 1)
         crowding   = min(et.crowding_distance, 10.0) / 10.0
         return 0.7 * rank_score + 0.3 * crowding
 
     def _heuristic_potential(self, node_id: str) -> float:
         """
-        Normalización dinámica con max_salary del grafo actual,
-        no hardcoded a 180_000. Evita saturación en grafos con salarios altos.
+        Normalizacion dinamica con max_salary del grafo actual,
+        no hardcoded a 180_000. Evita saturacion en grafos con salarios altos.
         """
         attrs            = self._graph.node_attrs(node_id)
         successors_count = len(self._graph.successors(node_id))
-        # Self._max_salary calculado dinámicamente en __init__
         salary_score     = attrs.get("avg_salary", 0) / max(self._max_salary, 1)
         branching_score  = min(successors_count / 5.0, 1.0)
         return 0.6 * salary_score + 0.4 * branching_score

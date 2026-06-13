@@ -1,8 +1,11 @@
 """
-backend/core/simulation.py
+core/simulation.py
 --------------------------
-Componente de Simulación Estocástica de Carrera Profesional.
+Componente de Simulacion Estocastica de Carrera Profesional.
 
+FIX ADAPTATIVO: El success_score ahora normaliza contra max_salary_ref
+del grafo en vez de hardcodear $200,000.
+FIX: Proteccion contra division por zero en todos los calculos.
 """
 
 from __future__ import annotations
@@ -16,9 +19,9 @@ import numpy as np
 from loguru import logger
 
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # Tipos de eventos
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 class EventType(str, Enum):
     PROMOTION       = "promotion"
@@ -33,7 +36,6 @@ class EventType(str, Enum):
     ACQUISITION     = "acquisition"
 
 
-# FIX [SIM2]: encoding fijo y determinista por EventType
 _EVENT_TYPE_ENCODING: dict[str, float] = {
     EventType.PROMOTION.value:       0.0,
     EventType.LAYOFF.value:          0.1,
@@ -92,9 +94,9 @@ class SimulationResult:
         }
 
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # Probabilidades por nodo ID (careers.json legacy)
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 NODE_EVENT_PROBS: dict[str, dict[EventType, float]] = {
     "junior_dev": {
@@ -150,7 +152,7 @@ NODE_EVENT_PROBS: dict[str, dict[EventType, float]] = {
     },
 }
 
-# FIX [SIM1]: fallback por node_type universal — cubre TODOS los domain graphs
+# FIX [SIM1]: fallback por node_type universal
 NODE_TYPE_EVENT_PROBS: dict[str, dict[EventType, float]] = {
     "entry": {
         EventType.PROMOTION:  0.12, EventType.LAYOFF:     0.09,
@@ -194,35 +196,33 @@ EVENT_EFFECTS: dict[EventType, dict[str, float]] = {
 
 EVENT_DESCRIPTIONS: dict[EventType, str] = {
     EventType.PROMOTION:       "Ascenso acelerado por rendimiento excepcional",
-    EventType.LAYOFF:          "Despido por reducción de plantilla / reestructuración",
-    EventType.MARKET_BOOM:     "Boom del mercado tecnológico — alta demanda de tu perfil",
-    EventType.MARKET_CRASH:    "Recesión económica — mercado más competitivo",
-    EventType.BURNOUT:         "Burnout profesional — necesidad de pausar o reorientar",
+    EventType.LAYOFF:          "Despido por reduccion de plantilla / reestructuracion",
+    EventType.MARKET_BOOM:     "Boom del mercado tecnologico -- alta demanda de tu perfil",
+    EventType.MARKET_CRASH:    "Recesion economica -- mercado mas competitivo",
+    EventType.BURNOUT:         "Burnout profesional -- necesidad de pausar o reorientar",
     EventType.NETWORKING:      "Conexiones clave que abren nuevas puertas",
-    EventType.SKILL_OBSOLETE:  "Tecnología dominada queda obsoleta",
+    EventType.SKILL_OBSOLETE:  "Tecnologia dominada queda obsoleta",
     EventType.MENTORSHIP:      "Mentor clave acelera tu desarrollo",
-    EventType.STARTUP_FAILURE: "El emprendimiento fracasa — reorientación necesaria",
-    EventType.ACQUISITION:     "La empresa es adquirida — oportunidades y cambios",
+    EventType.STARTUP_FAILURE: "El emprendimiento fracasa -- reorientacion necesaria",
+    EventType.ACQUISITION:     "La empresa es adquirida -- oportunidades y cambios",
 }
 
-# FIX [SIM4]: límite del multiplicador salarial acumulado
 _MAX_SALARY_MULT: float = 2.5
 _MIN_SALARY_MULT: float = 0.5
 
-# Eventos negativos para estadísticas de riesgo
 _NEGATIVE_EVENTS = {
     EventType.LAYOFF, EventType.BURNOUT,
     EventType.STARTUP_FAILURE, EventType.MARKET_CRASH,
 }
 
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # Simulador principal
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 class CareerSimulator:
     """
-    Simula la ejecución de una trayectoria profesional con eventos aleatorios.
+    Simula la ejecucion de una trayectoria profesional con eventos aleatorios.
     """
 
     def __init__(
@@ -230,15 +230,16 @@ class CareerSimulator:
         seed: int | None = None,
         n_simulations: int = 50,
         outcome_model=None,
-        max_salary_ref: float = 200_000,
+        max_salary_ref: float | None = None,
     ) -> None:
         self._rng          = random.Random(seed)
         self._np_rng       = np.random.default_rng(seed)
         self._n_sims       = n_simulations
         self._outcome_model = outcome_model
-        self._max_salary_ref = max_salary_ref
+        # FIX ADAPTATIVO: referencia salarial para normalizacion
+        self._max_salary_ref = max_salary_ref or 200_000
 
-    # ── API pública ────────────────────────────────────────────
+    # -- API publica -------------------------------------------------------
 
     def simulate(
         self,
@@ -246,7 +247,7 @@ class CareerSimulator:
         node_attrs: dict[str, dict],
         edge_attrs: dict[tuple, dict],
     ) -> SimulationResult:
-        """Simula una trayectoria una vez con eventos estocásticos."""
+        """Simula una trayectoria una vez con eventos estocasticos."""
         if not path:
             return SimulationResult(path=path)
 
@@ -269,7 +270,6 @@ class CareerSimulator:
 
             for ev in node_events:
                 eff = ev.effects
-                # FIX [SIM4]: acumular y aplicar cap al salary_mult
                 salary_mult        = min(
                     _MAX_SALARY_MULT,
                     max(_MIN_SALARY_MULT, salary_mult * eff.get("salary_mult", 1.0))
@@ -288,8 +288,9 @@ class CareerSimulator:
         effective_years    = max(1.0, current_year + year_offset)
 
         neg_count = sum(1 for e in events if e.event_type in _NEGATIVE_EVENTS)
-        # Usar max_salary_ref del grafo, no hardcoded a 200_000
-        salary_ref = max(self._max_salary_ref, 1)
+
+        # FIX ADAPTATIVO: normalizar contra max_salary_ref del grafo
+        salary_ref = max(self._max_salary_ref, 1.0)
         success_score = (
             0.35 * min(final_salary / salary_ref, 1.0) +
             0.30 * final_satisfaction +
@@ -317,17 +318,12 @@ class CareerSimulator:
         """
         Ejecuta N simulaciones Monte Carlo de la misma trayectoria.
         """
-        # Welford accumulators
         n = 0
-        # salary
         sal_mean = sal_m2 = 0.0
         sal_samples: list[float] = []
-        # satisfaction
         sat_mean = sat_m2 = 0.0
-        # years
         yr_mean = yr_m2 = 0.0
         yr_samples: list[float] = []
-        # success
         sc_mean = sc_m2 = 0.0
 
         best_result:  SimulationResult | None = None
@@ -335,7 +331,6 @@ class CareerSimulator:
         best_score  = -1.0
         worst_score =  2.0
 
-        # Risk event counters
         risk_counts: dict[str, int] = {
             EventType.LAYOFF.value:          0,
             EventType.BURNOUT.value:         0,
@@ -347,7 +342,6 @@ class CareerSimulator:
             r = self.simulate(path, node_attrs, edge_attrs)
             n += 1
 
-            # Welford update
             def _welford(mean: float, m2: float, x: float) -> tuple[float, float]:
                 delta  = x - mean
                 mean  += delta / n
@@ -406,15 +400,11 @@ class CareerSimulator:
             "worst_case":  worst_result.to_dict() if worst_result else {},
         }
 
-    # ── Internals ──────────────────────────────────────────────
+    # -- Internals ---------------------------------------------------------
 
     def _get_event_probs(
         self, node_id: str, node_attrs: dict
     ) -> dict[EventType, float]:
-        """
-        Lookup por ID (legacy careers.json) con fallback por
-        node_type ("entry"/"mid"/"senior"/"leadership") para domain graphs.
-        """
         if node_id in NODE_EVENT_PROBS:
             return NODE_EVENT_PROBS[node_id]
 
@@ -430,7 +420,6 @@ class CareerSimulator:
         year:       int,
         node_attrs: dict,
     ) -> list[CareerEvent]:
-        """Genera eventos aleatorios para un nodo dado."""
         probs  = self._get_event_probs(node_id, node_attrs)
         events: list[CareerEvent] = []
 
@@ -460,7 +449,6 @@ class CareerSimulator:
         event_type: EventType,
         node_attrs: dict,
     ) -> float:
-        """Ajusta la probabilidad base según atributos del nodo."""
         p            = base_prob
         satisfaction = node_attrs.get("satisfaction", 0.7)
         demand       = node_attrs.get("demand",       0.7)
@@ -478,13 +466,10 @@ class CareerSimulator:
 
     @staticmethod
     def _node_to_features(node_attrs: dict, event_type: EventType) -> list[float]:
-        """
-        Encoding fijo y determinista por EventType.
-        """
         return [
             node_attrs.get("avg_salary",        50_000) / 200_000,
             node_attrs.get("demand",             0.7),
             node_attrs.get("satisfaction",       0.7),
             node_attrs.get("years_experience",   3) / 20,
-            _EVENT_TYPE_ENCODING.get(event_type.value, 0.5),  # FIX [SIM2]
+            _EVENT_TYPE_ENCODING.get(event_type.value, 0.5),
         ]

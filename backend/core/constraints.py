@@ -1,10 +1,12 @@
 """
 core/constraints.py
 -------------------
-Define y evalúa restricciones sobre trayectorias profesionales.
-Incluye restricciones adaptativas por percentil que se ajustan
-automáticamente al grafo cargado (careers.json o domain graphs).
+Define y evalua restricciones sobre trayectorias profesionales.
 
+FIX ADAPTATIVO v2: Las PercentileConstraint ahora tienen "spread awareness" --
+si el rango de datos es muy estrecho (ej: riesgo 0.43-0.53), automaticamente
+relajan el umbral para no filtrar casi todo. Los perfiles tambien usan
+percentiles mas permisivos para funcionar con cualquier dominio.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol
 
-# FIX [C2]: constante compartida — importada por graph.py y main_api.py también
+# FIX [C2]: constante compartida -- importada por graph.py y main_api.py tambien
 DEFAULT_MAX_YEARS: int = 12
 
 
@@ -52,7 +54,7 @@ class Constraint(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Operadores lógicos
+# Operadores logicos
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -80,12 +82,12 @@ class OrConstraint(Constraint):
 
 
 # ---------------------------------------------------------------------------
-# Restricciones concretas FIJAS (originales — se siguen usando)
+# Restricciones concretas con valores fijos (legacy, compatibilidad)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class MaxYearsConstraint(Constraint):
-    """La trayectoria no puede superar N años en total."""
+    """La trayectoria no puede superar N anos en total."""
 
     max_years: int
 
@@ -123,7 +125,7 @@ class MaxRiskConstraint(Constraint):
 
 @dataclass
 class MinSalaryConstraint(Constraint):
-    """El salario final debe superar un mínimo."""
+    """El salario final debe superar un minimo."""
 
     min_salary: float
 
@@ -171,7 +173,7 @@ class MaxDifficultyConstraint(Constraint):
 
 @dataclass
 class RequiredNodeConstraint(Constraint):
-    """La trayectoria debe pasar por un nodo específico."""
+    """La trayectoria debe pasar por un nodo especifico."""
 
     required_node: str
 
@@ -183,149 +185,235 @@ class RequiredNodeConstraint(Constraint):
 
 
 # ---------------------------------------------------------------------------
-# Restricciones ADAPTATIVAS por percentil (nuevas)
-# Se ajustan automáticamente al grafo cargado, sin valores fijos.
+# NUEVAS: Restricciones adaptativas por percentil con "spread awareness"
 # ---------------------------------------------------------------------------
+# Cuando el rango de datos es muy estrecho (ej: riesgo 0.43-0.53),
+# los percentiles producen umbrales muy restrictivos que filtran casi todo.
+# Ahora las restricciones detectan rangos estrechos y relajan automaticamente
+# el umbral para permitir suficiente variabilidad en las trayectorias.
 
 @dataclass
-class PercentileSalaryConstraint(Constraint):
+class PercentileMinSalaryConstraint(Constraint):
     """
-    El salario final debe superar un percentil de los salarios del grafo.
-    Ej: percentile=0.60 significa que el salario final debe ser mayor
-    al 60% de los nodos del grafo.
+    El salario final debe superar el percentil P de los salarios del grafo.
+
+    Spread awareness: si el rango salarial es estrecho (< 20% del max),
+    usa un percentil mas bajo automaticamente para no filtrar demasiado.
     """
-    percentile: float = 0.50  # 0.0 a 1.0
+
+    percentile: float = 40.0   # percentil 0-100
+    _threshold: float | None = None
+
+    def _ensure_threshold(self, graph: GraphProtocol) -> float:
+        if self._threshold is not None:
+            return self._threshold
+        # Intentar usar thresholds pre-computados del grafo
+        if hasattr(graph, 'percentile_thresholds') and 'salary' in getattr(graph, 'percentile_thresholds', {}):
+            p_key = f"p{int(self.percentile)}"
+            sal_info = graph.percentile_thresholds['salary']
+            self._threshold = sal_info.get(p_key, 0.0)
+            # FIX SPREAD: si el rango es muy estrecho, relajar
+            sal_min = sal_info.get('min', 0.0)
+            sal_max = sal_info.get('max', 0.0)
+            sal_range = sal_max - sal_min
+            # Si el rango es < 20% del maximo, usar p10 como minimo
+            if sal_max > 0 and sal_range / sal_max < 0.20:
+                p10_key = "p10"
+                relaxed = sal_info.get(p10_key, self._threshold)
+                self._threshold = min(self._threshold, relaxed)
+                import numpy as np
+                # Usar al menos el minimo absoluto para no filtrar todo
+                self._threshold = min(self._threshold, sal_min * 1.01)
+        else:
+            # Fallback: calcular al vuelo
+            salaries = []
+            for nid in graph.all_node_ids():
+                salaries.append(graph.node_attrs(nid).get("avg_salary", 0.0))
+            if not salaries:
+                self._threshold = 0.0
+            else:
+                import numpy as np
+                self._threshold = float(np.percentile(salaries, self.percentile))
+                # Spread awareness
+                sal_min = min(salaries)
+                sal_max = max(salaries)
+                if sal_max > 0 and (sal_max - sal_min) / sal_max < 0.20:
+                    relaxed = float(np.percentile(salaries, 10))
+                    self._threshold = min(self._threshold, relaxed)
+        return self._threshold
 
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if not path:
             return True
+        threshold = self._ensure_threshold(graph)
         final_salary = graph.node_attrs(path[-1]).get("avg_salary", 0.0)
-        p_key = f"p{int(self.percentile * 100)}"
-        thresholds = getattr(graph, '_salary_thresholds', {})
-        threshold = thresholds.get(p_key, 0.0)
         return final_salary >= threshold
 
     def __repr__(self) -> str:
-        return f"PercentileSalary({self.percentile:.0%})"
+        return f"PercentileMinSalary(p{int(self.percentile)})"
 
 
 @dataclass
-class PercentileRiskConstraint(Constraint):
+class PercentileMaxRiskConstraint(Constraint):
     """
-    El riesgo promedio no debe superar un percentil
-    de los riesgos de las aristas del grafo.
+    El riesgo promedio no puede superar el percentil P de los riesgos del grafo.
+
+    Spread awareness: si el rango de riesgo es muy estrecho (< 0.15),
+    usa el percentil 90 o el maximo como umbral para no filtrar casi todo.
+    En rangos estrechos, el riesgo no discrimina bien entre trayectorias.
     """
-    percentile: float = 0.50
+
+    percentile: float = 75.0   # percentil 0-100
+    _threshold: float | None = None
+
+    # Umbral de spread para riesgo: si (max - min) < esto, relajar
+    _RISK_SPREAD_THRESHOLD: float = 0.15
+
+    def _ensure_threshold(self, graph: GraphProtocol) -> float:
+        if self._threshold is not None:
+            return self._threshold
+        if hasattr(graph, 'percentile_thresholds') and 'risk' in getattr(graph, 'percentile_thresholds', {}):
+            p_key = f"p{int(self.percentile)}"
+            risk_info = graph.percentile_thresholds['risk']
+            self._threshold = risk_info.get(p_key, 1.0)
+            # FIX SPREAD: si el rango de riesgo es muy estrecho, relajar
+            risk_min = risk_info.get('min', 0.0)
+            risk_max = risk_info.get('max', 1.0)
+            risk_spread = risk_max - risk_min
+            if risk_spread < self._RISK_SPREAD_THRESHOLD:
+                # Rango estrecho: usar p90 o el maximo como umbral
+                p90_val = risk_info.get('p90', risk_max)
+                self._threshold = max(self._threshold, p90_val)
+                # Ademas anadir un margen: max + 10% del spread
+                self._threshold = max(self._threshold, risk_max + risk_spread * 0.10)
+                # Pero nunca superar 1.0
+                self._threshold = min(self._threshold, 1.0)
+        else:
+            risks = []
+            for nid in graph.all_node_ids():
+                for succ in graph.successors(nid):
+                    risks.append(graph.edge_attrs(nid, succ).get("risk", 0.0))
+            if not risks:
+                self._threshold = 1.0
+            else:
+                import numpy as np
+                self._threshold = float(np.percentile(risks, self.percentile))
+                risk_min = min(risks)
+                risk_max = max(risks)
+                if (risk_max - risk_min) < self._RISK_SPREAD_THRESHOLD:
+                    relaxed = float(np.percentile(risks, 90))
+                    self._threshold = max(self._threshold, relaxed)
+        return self._threshold
 
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if len(path) < 2:
             return True
+        threshold = self._ensure_threshold(graph)
         risks = [
             graph.edge_attrs(path[i], path[i + 1]).get("risk", 0.0)
             for i in range(len(path) - 1)
         ]
-        avg_risk = sum(risks) / len(risks)
-        p_key = f"p{int(self.percentile * 100)}"
-        thresholds = getattr(graph, '_risk_thresholds', {})
-        threshold = thresholds.get(p_key, 1.0)
-        return avg_risk <= threshold
+        return (sum(risks) / len(risks)) <= threshold
 
     def __repr__(self) -> str:
-        return f"PercentileRisk({self.percentile:.0%})"
+        return f"PercentileMaxRisk(p{int(self.percentile)})"
 
 
 @dataclass
-class PercentileDifficultyConstraint(Constraint):
+class PercentileMaxDifficultyConstraint(Constraint):
     """
-    La dificultad promedio no debe superar un percentil
-    de las dificultades de las aristas del grafo.
+    La dificultad promedio no puede superar el percentil P del grafo.
+
+    Spread awareness: igual que MaxRisk, si el rango es estrecho (< 0.15),
+    relaja automaticamente el umbral.
     """
-    percentile: float = 0.50
+
+    percentile: float = 75.0   # percentil 0-100
+    _threshold: float | None = None
+
+    _DIFF_SPREAD_THRESHOLD: float = 0.15
+
+    def _ensure_threshold(self, graph: GraphProtocol) -> float:
+        if self._threshold is not None:
+            return self._threshold
+        if hasattr(graph, 'percentile_thresholds') and 'difficulty' in getattr(graph, 'percentile_thresholds', {}):
+            p_key = f"p{int(self.percentile)}"
+            diff_info = graph.percentile_thresholds['difficulty']
+            self._threshold = diff_info.get(p_key, 1.0)
+            # FIX SPREAD: si el rango de dificultad es muy estrecho, relajar
+            diff_min = diff_info.get('min', 0.0)
+            diff_max = diff_info.get('max', 1.0)
+            diff_spread = diff_max - diff_min
+            if diff_spread < self._DIFF_SPREAD_THRESHOLD:
+                p90_val = diff_info.get('p90', diff_max)
+                self._threshold = max(self._threshold, p90_val)
+                self._threshold = max(self._threshold, diff_max + diff_spread * 0.10)
+                self._threshold = min(self._threshold, 1.0)
+        else:
+            diffs = []
+            for nid in graph.all_node_ids():
+                for succ in graph.successors(nid):
+                    diffs.append(graph.edge_attrs(nid, succ).get("difficulty", 0.0))
+            if not diffs:
+                self._threshold = 1.0
+            else:
+                import numpy as np
+                self._threshold = float(np.percentile(diffs, self.percentile))
+                diff_min = min(diffs)
+                diff_max = max(diffs)
+                if (diff_max - diff_min) < self._DIFF_SPREAD_THRESHOLD:
+                    relaxed = float(np.percentile(diffs, 90))
+                    self._threshold = max(self._threshold, relaxed)
+        return self._threshold
 
     def is_satisfied(self, path: tuple[str, ...], graph: GraphProtocol) -> bool:
         if len(path) < 2:
             return True
+        threshold = self._ensure_threshold(graph)
         diffs = [
             graph.edge_attrs(path[i], path[i + 1]).get("difficulty", 0.0)
             for i in range(len(path) - 1)
         ]
-        avg_diff = sum(diffs) / len(diffs)
-        p_key = f"p{int(self.percentile * 100)}"
-        thresholds = getattr(graph, '_difficulty_thresholds', {})
-        threshold = thresholds.get(p_key, 1.0)
-        return avg_diff <= threshold
+        return (sum(diffs) / len(diffs)) <= threshold
 
     def __repr__(self) -> str:
-        return f"PercentileDifficulty({self.percentile:.0%})"
+        return f"PercentileMaxDifficulty(p{int(self.percentile)})"
 
 
 # ---------------------------------------------------------------------------
-# Fábrica de configuraciones predefinidas — AHORA ADAPTATIVAS
+# Fabrica de configuraciones predefinidas -- ACTUALIZADA con percentiles v2
 # ---------------------------------------------------------------------------
+# Los percentiles son mas permisivos que antes porque:
+# 1. El spread awareness relaja automaticamente en rangos estrechos
+# 2. Los percentiles base son mas altos para no filtrar demasiado
+# 3. careers.json (rango amplio) produce umbrales similares a los fijos originales
 
 class ConstraintProfiles:
-    """
-    Perfiles de restricciones adaptativos al dominio.
-    Los umbrales se calculan como percentiles del grafo,
-    no como valores fijos. Funcionan igual de bien con
-    careers.json que con cualquier domain graph.
-    """
+    """Perfiles de restricciones listos para usar en experimentos."""
 
     @staticmethod
-    def conservative(
-        max_risk_percentile: float = 0.40,
-        max_difficulty_percentile: float = 0.55,
-    ) -> Constraint:
-        """
-        Usuario adverso al riesgo, quiere estabilidad.
-        Solo acepta trayectorias con riesgo y dificultad bajos
-        respecto al grafo cargado.
-        """
+    def conservative() -> Constraint:
+        """Usuario adverso al riesgo, quiere estabilidad."""
         return (
-            PercentileRiskConstraint(max_risk_percentile)
-            & PercentileDifficultyConstraint(max_difficulty_percentile)
+            PercentileMaxRiskConstraint(percentile=65.0)
+            & PercentileMaxDifficultyConstraint(percentile=75.0)
         )
 
     @staticmethod
-    def ambitious(
-        min_salary_percentile: float = 0.60,
-        min_steps: int = 2,
-    ) -> Constraint:
-        """
-        Usuario que prioriza crecimiento salarial rápido.
-        Exige que el salario final supere el 60% de los nodos del grafo.
-        """
-        return (
-            PercentileSalaryConstraint(min_salary_percentile)
-            & MinLengthConstraint(min_steps)
-        )
+    def ambitious() -> Constraint:
+        """Usuario que prioriza crecimiento salarial rapido."""
+        return PercentileMinSalaryConstraint(percentile=25.0) & MinLengthConstraint(2)
 
     @staticmethod
-    def balanced(
-        max_years: int = DEFAULT_MAX_YEARS,
-        max_risk_percentile: float = 0.60,
-        min_salary_percentile: float = 0.40,
-    ) -> Constraint:
-        """
-        Equilibrio entre tiempo, riesgo y dinero.
-        El riesgo y salario se adaptan al grafo.
-        """
+    def balanced(max_years: int = DEFAULT_MAX_YEARS) -> Constraint:
+        """Usa DEFAULT_MAX_YEARS=12 sincronizado con el resto del sistema."""
         return (
             MaxYearsConstraint(max_years)
-            & PercentileRiskConstraint(max_risk_percentile)
-            & PercentileSalaryConstraint(min_salary_percentile)
+            & PercentileMaxRiskConstraint(percentile=75.0)
+            & PercentileMinSalaryConstraint(percentile=20.0)
         )
 
     @staticmethod
-    def fast_track(
-        max_years: int = 6,
-        min_salary_percentile: float = 0.70,
-    ) -> Constraint:
-        """
-        Máximo crecimiento en menor tiempo.
-        Exige salario alto (percentil 70) en pocos años.
-        """
-        return (
-            MaxYearsConstraint(max_years)
-            & PercentileSalaryConstraint(min_salary_percentile)
-        )
+    def fast_track() -> Constraint:
+        """Usuario que quiere llegar lejos en poco tiempo."""
+        return MaxYearsConstraint(6) & PercentileMinSalaryConstraint(percentile=35.0)

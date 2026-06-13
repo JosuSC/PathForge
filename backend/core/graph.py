@@ -1,9 +1,14 @@
 """
 core/graph.py
 -------------
-Capa de abstracción sobre el grafo de carreras.
-Pre-computa umbrales por percentil para constraints adaptativos.
+Capa de abstraccion sobre el grafo de carreras.
 
+FIX ADAPTATIVO: Pre-computa percentiles de salary, risk y difficulty
+para que las PercentileConstraint classes no tengan que calcularlos
+cada vez. Tambien expone max_salary_ref para simulation.py.
+
+FIX: score_trajectory protege contra salarios iniciales de 0.
+FIX: Pre-computa spread info para que las constraints hagan spread awareness.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Constante compartida: max años por defecto
+# Constante compartida: max anos por defecto
 # (sincronizada con constraints.py y main_api.py)
 # ---------------------------------------------------------------------------
 DEFAULT_MAX_YEARS: int = 12
@@ -42,7 +47,7 @@ class Trajectory:
         return len(self.nodes)
 
     def __repr__(self) -> str:
-        return " → ".join(self.nodes)
+        return " -> ".join(self.nodes)
 
 
 # ---------------------------------------------------------------------------
@@ -51,50 +56,95 @@ class Trajectory:
 
 class CareerGraph:
     """
-    Wrapper sobre nx.DiGraph que expone operaciones específicas
+    Wrapper sobre nx.DiGraph que expone operaciones especificas
     del dominio de trayectorias profesionales.
-    Pre-computa umbrales por percentil para que los constraints
-    adaptativos funcionen sin recalcular en cada evaluación.
     """
 
     def __init__(self, graph: nx.DiGraph, outcome_predictor=None) -> None:
         self._g = graph
         self._outcome_predictor = outcome_predictor
-        # FIX [GEN3]: calcular max_salary una sola vez para normalización dinámica
+        # FIX [GEN3]: calcular max_salary una sola vez para normalizacion dinamica
         salaries = [
             data.get("avg_salary", 0)
             for _, data in self._g.nodes(data=True)
         ]
         self._max_salary: float = max(salaries) if salaries else 180_000
         self._validate()
-
-        # ── Pre-computar umbrales por percentil para constraints adaptativos ──
-        # Se calculan UNA vez al crear el CareerGraph y se reutilizarán
-        # en cada llamada a PercentileRiskConstraint.is_satisfied() etc.
-        risks = [data.get("risk", 0) for _, _, data in self._g.edges(data=True)]
-        diffs = [data.get("difficulty", 0) for _, _, data in self._g.edges(data=True)]
-
-        self._salary_thresholds: dict[str, float] = {}
-        if salaries:
-            for p in range(1, 100):
-                self._salary_thresholds[f"p{p}"] = float(np.percentile(salaries, p))
-
-        self._risk_thresholds: dict[str, float] = {}
-        if risks:
-            for p in range(1, 100):
-                self._risk_thresholds[f"p{p}"] = float(np.percentile(risks, p))
-
-        self._difficulty_thresholds: dict[str, float] = {}
-        if diffs:
-            for p in range(1, 100):
-                self._difficulty_thresholds[f"p{p}"] = float(np.percentile(diffs, p))
+        # FIX ADAPTATIVO: pre-computar percentiles para restricciones adaptativas
+        self._precompute_percentiles()
 
     # ------------------------------------------------------------------
-    # Validación
+    # Pre-computacion de percentiles para restricciones adaptativas
+    # ------------------------------------------------------------------
+
+    def _precompute_percentiles(self) -> None:
+        """
+        Pre-computa umbrales por percentil para salary, risk y difficulty.
+        Las PercentileConstraint classes usan estos valores en vez de
+        calcularlos cada vez que se evalua una restriccion.
+        """
+        percentiles_to_compute = [10, 20, 25, 30, 40, 50, 60, 65, 70, 75, 80, 85, 90, 95]
+
+        # Salary percentiles (de nodos)
+        salaries = [
+            data.get("avg_salary", 0.0)
+            for _, data in self._g.nodes(data=True)
+        ]
+        salary_thresholds = {}
+        if salaries:
+            for p in percentiles_to_compute:
+                salary_thresholds[f"p{p}"] = float(np.percentile(salaries, p))
+        salary_thresholds["min"] = float(min(salaries)) if salaries else 0.0
+        salary_thresholds["max"] = float(max(salaries)) if salaries else 0.0
+
+        # Risk percentiles (de aristas)
+        risks = [
+            data.get("risk", 0.0)
+            for _, _, data in self._g.edges(data=True)
+        ]
+        risk_thresholds = {}
+        if risks:
+            for p in percentiles_to_compute:
+                risk_thresholds[f"p{p}"] = float(np.percentile(risks, p))
+        risk_thresholds["min"] = float(min(risks)) if risks else 0.0
+        risk_thresholds["max"] = float(max(risks)) if risks else 1.0
+
+        # Difficulty percentiles (de aristas)
+        diffs = [
+            data.get("difficulty", 0.0)
+            for _, _, data in self._g.edges(data=True)
+        ]
+        diff_thresholds = {}
+        if diffs:
+            for p in percentiles_to_compute:
+                diff_thresholds[f"p{p}"] = float(np.percentile(diffs, p))
+        diff_thresholds["min"] = float(min(diffs)) if diffs else 0.0
+        diff_thresholds["max"] = float(max(diffs)) if diffs else 1.0
+
+        self.percentile_thresholds: dict[str, dict[str, float]] = {
+            "salary": salary_thresholds,
+            "risk": risk_thresholds,
+            "difficulty": diff_thresholds,
+        }
+
+    # ------------------------------------------------------------------
+    # Propiedad publica: referencia salarial maxima para normalizacion
+    # ------------------------------------------------------------------
+
+    @property
+    def max_salary_ref(self) -> float:
+        """
+        Salario maximo del grafo, usado por simulation.py para
+        normalizar el success_score sin hardcodear 200K.
+        """
+        return self._max_salary
+
+    # ------------------------------------------------------------------
+    # Validacion
     # ------------------------------------------------------------------
 
     def _validate(self) -> None:
-        """Verifica que el grafo tenga los atributos mínimos requeridos."""
+        """Verifica que el grafo tenga los atributos minimos requeridos."""
         required_node_attrs = {"avg_salary", "demand", "satisfaction"}
         required_edge_attrs = {"difficulty", "risk", "transition_years"}
 
@@ -106,10 +156,10 @@ class CareerGraph:
         for u, v, data in self._g.edges(data=True):
             missing = required_edge_attrs - data.keys()
             if missing:
-                raise ValueError(f"Arista '{u}→{v}' falta atributos: {missing}")
+                raise ValueError(f"Arista '{u}->{v}' falta atributos: {missing}")
 
     # ------------------------------------------------------------------
-    # Consultas básicas
+    # Consultas basicas
     # ------------------------------------------------------------------
 
     def successors(self, node_id: str) -> list[str]:
@@ -127,7 +177,7 @@ class CareerGraph:
     def all_node_ids(self) -> list[str]:
         return list(self._g.nodes())
 
-    # FIX [G4]: cached_property — se calcula una sola vez
+    # FIX [G4]: cached_property -- se calcula una sola vez
     @cached_property
     def _terminal_nodes_set(self) -> frozenset[str]:
         return frozenset(n for n in self._g.nodes() if self._g.out_degree(n) == 0)
@@ -145,7 +195,7 @@ class CareerGraph:
 
     def score_trajectory(self, trajectory: tuple[str, ...]) -> dict[str, float]:
         """
-        Calcula métricas cuantitativas de una trayectoria.
+        Calcula metricas cuantitativas de una trayectoria.
 
         Objetivos a maximizar:
             salary_growth, avg_demand, avg_satisfaction, final_salary,
@@ -167,13 +217,14 @@ class CareerGraph:
         demands       = [n["demand"]        for n in nodes_data]
         satisfactions = [n["satisfaction"]  for n in nodes_data]
 
-        # FIX: abs() protege contra salarios negativos accidentales
-        salary_growth = (salaries[-1] - salaries[0]) / max(abs(salaries[0]), 1)
+        # FIX ADAPTATIVO: evitar division by zero en salary_growth
+        # cuando el salario inicial es 0
+        salary_growth = (salaries[-1] - salaries[0]) / max(salaries[0], 1)
         total_years   = sum(e["transition_years"] for e in edges_data)
         avg_risk       = float(np.mean([e["risk"]       for e in edges_data]))
         avg_difficulty = float(np.mean([e["difficulty"] for e in edges_data]))
 
-        # FIX [G1]: is_terminal_end — usado por main_api para clasificar grupos
+        # FIX [G1]: is_terminal_end -- usado por main_api para clasificar grupos
         is_terminal_end   = 1.0 if self.is_terminal(trajectory[-1])  else 0.0
         is_terminal_start = 0.0 if self.is_terminal(trajectory[0])   else 1.0
 
@@ -194,10 +245,10 @@ class CareerGraph:
             "avg_demand":                  round(float(np.mean(demands)),      4),
             "avg_satisfaction":            round(float(np.mean(satisfactions)),4),
             "final_salary":                round(salaries[-1],                 2),
-            "is_terminal_end":             is_terminal_end,               # FIX [G1]
+            "is_terminal_end":             is_terminal_end,
             "is_terminal_start":           is_terminal_start,
-            "transition_probability_score":round(transition_probability_score, 4),  # FIX [G3]
-            "salary_growth_edge":          round(salary_growth_edge,          4),   # FIX [G3]
+            "transition_probability_score":round(transition_probability_score, 4),
+            "salary_growth_edge":          round(salary_growth_edge,          4),
             # Costos (menor es mejor)
             "total_years":    round(float(total_years),   2),
             "avg_risk":       round(avg_risk,             4),
@@ -212,15 +263,13 @@ class CareerGraph:
         self,
         source: str,
         max_depth: int = 5,
-        max_paths: int = 5_000,     # FIX [G2]: límite de paths totales
+        max_paths: int = 5_000,
     ) -> Iterator[tuple[str, ...]]:
         """
         Itera todos los caminos simples desde source hasta max_depth.
-        Implementación iterativa con stack explícito.
-        Evita recursión profunda y añade límite de paths para grafos densos.
+        Implementacion iterativa con stack explicito.
         """
         count = 0
-        # Stack: (path_so_far, visited_set)
         stack: list[tuple[tuple[str, ...], frozenset[str]]] = [
             ((source,), frozenset({source}))
         ]

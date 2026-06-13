@@ -1,8 +1,17 @@
 """
 core/evaluator.py
 -----------------
-Evalúa y rankea trayectorias usando dominancia de Pareto (NSGA-II).
+Evalua y rankea trayectorias usando dominancia de Pareto (NSGA-II).
 
+FIX CRITICO: _fast_non_dominated_sort_numpy tenia un bug donde
+dominated_mask usaba .any(axis=0) en vez de .sum(axis=0). Esto
+causaba que la reduccion del domination_count fuera incorrecta
+cuando multiples miembros del frente actual dominaban al mismo
+individuo, dejando algunos con rank=-1, lo que provocaba
+ZeroDivisionError en _pareto_score (1.0 / (1.0 + (-1)) = div/0).
+
+FIX: Proteccion contra rank=-1 en _pareto_score y _assign_crowding_distances.
+FIX: nan_to_num antes y despues de la inversion de costos en _build_objective_matrix.
 """
 
 from __future__ import annotations
@@ -21,7 +30,7 @@ from backend.core.graph import CareerGraph, Trajectory
 
 @dataclass
 class EvaluatedTrajectory:
-    """Trayectoria con sus métricas calculadas y rank de Pareto."""
+    """Trayectoria con sus metricas calculadas y rank de Pareto."""
 
     trajectory:        Trajectory
     scores:            dict[str, float]
@@ -43,19 +52,18 @@ class EvaluatedTrajectory:
 
 class TrajectoryEvaluator:
     """
-    Evalúa un conjunto de trayectorias y las ordena por dominancia de Pareto.
-    Los objetivos de maximización se normalizan en [0, 1].
+    Evalua un conjunto de trayectorias y las ordena por dominancia de Pareto.
+    Los objetivos de maximizacion se normalizan en [0, 1].
     Los costos (minimizar) se invierten para uniformidad.
     """
 
-    # FIX [E4]: is_terminal_end añadido — sincronizado con graph.score_trajectory()
     MAXIMIZE = (
         "salary_growth",
         "avg_demand",
         "avg_satisfaction",
         "final_salary",
-        "is_terminal_end",               # FIX [E4]
-        "transition_probability_score",  # nuevo campo de graph v2
+        "is_terminal_end",
+        "transition_probability_score",
     )
     MINIMIZE = (
         "total_years",
@@ -67,14 +75,14 @@ class TrajectoryEvaluator:
         self._graph = graph
 
     # ------------------------------------------------------------------
-    # API pública
+    # API publica
     # ------------------------------------------------------------------
 
     def evaluate_all(
         self, trajectories: list[Trajectory]
     ) -> list[EvaluatedTrajectory]:
         """
-        Evalúa, rankea por Pareto y calcula crowding distance.
+        Evalua, rankea por Pareto y calcula crowding distance.
 
         Returns:
             Lista de EvaluatedTrajectory ordenada por rank (mejor primero).
@@ -84,7 +92,6 @@ class TrajectoryEvaluator:
 
         valid   = [t for t in trajectories if len(t) >= 2]
         skipped = len(trajectories) - len(valid)
-        # FIX [E3]: loggear descartadas en lugar de silencio
         if skipped:
             logger.debug(f"evaluate_all: {skipped} trayectorias descartadas por len < 2.")
 
@@ -101,12 +108,10 @@ class TrajectoryEvaluator:
 
         obj_matrix = self._build_objective_matrix(evaluated)
 
-        # FIX [E1]: sort vectorizado con numpy
         ranks = self._fast_non_dominated_sort_numpy(obj_matrix)
         for et, rank in zip(evaluated, ranks):
             et.pareto_rank = rank
 
-        # FIX [E2]: crowding distances con índices locales por frente
         self._assign_crowding_distances(evaluated, obj_matrix)
 
         evaluated.sort(key=lambda et: (et.pareto_rank, -et.crowding_distance))
@@ -115,7 +120,7 @@ class TrajectoryEvaluator:
     def pareto_front(
         self, evaluated: list[EvaluatedTrajectory]
     ) -> list[EvaluatedTrajectory]:
-        """Retorna solo las trayectorias del frente óptimo (rank == 0)."""
+        """Retorna solo las trayectorias del frente optimo (rank == 0)."""
         return [et for et in evaluated if et.pareto_rank == 0]
 
     # ------------------------------------------------------------------
@@ -134,19 +139,26 @@ class TrajectoryEvaluator:
             [[et.scores.get(obj, 0.0) for obj in objectives] for et in evaluated],
             dtype=np.float64,
         )
-        # Invertir costos → todo queda como maximizar
+
+        # Limpiar NaN/Inf ANTES de invertir costos
+        matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Invertir costos -> todo queda como maximizar
         n_max = len(self.MAXIMIZE)
         matrix[:, n_max:] *= -1
+
+        # Limpiar de nuevo por si la inversion generó valores extremos
+        matrix = np.nan_to_num(matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Normalizar cada columna en [0, 1]
         col_min   = matrix.min(axis=0)
         col_max   = matrix.max(axis=0)
         col_range = np.where(col_max - col_min == 0, 1.0, col_max - col_min)
         matrix    = (matrix - col_min) / col_range
-        
+
         # Reemplazar NaN por 0.0 (evita divisiones por cero posteriores)
         matrix = np.nan_to_num(matrix, nan=0.0)
-        
+
         return matrix
 
     @staticmethod
@@ -154,29 +166,30 @@ class TrajectoryEvaluator:
         """
         NSGA-II non-dominated sort vectorizado con numpy.
 
-        En lugar de N² comparaciones Python, usa broadcasting matricial:
-        - Para cada individuo i, calcula en paralelo cuántos individuos j lo dominan.
-        - Complejidad sigue siendo O(M·N²) en número de operaciones, pero
-          ejecutadas como BLAS/numpy, ~20-50x más rápido que loops Python puros.
+        FIX CRITICO: La version anterior usaba .any(axis=0) para
+        calcular dominated_mask, lo que solo restaba 1 al domination_count
+        de cada individuo, incluso si era dominado por multiples miembros
+        del frente actual. Esto dejaba algunos individuos con rank=-1,
+        causando ZeroDivisionError en _pareto_score.
 
-        Para N=500, M=8: antes ~2s Python, ahora ~50ms numpy.
+        Ahora usa .sum(axis=0) para restar el conteo exacto de dominadores.
         """
         n   = len(obj_matrix)
-        # obj_matrix shape: (N, M)
-        # Expandir a (N, N, M) para comparar todos contra todos
-        A   = obj_matrix[:, np.newaxis, :]   # shape (N, 1, M) — "soy yo"
-        B   = obj_matrix[np.newaxis, :, :]   # shape (1, N, M) — "el otro"
+        if n == 0:
+            return []
 
-        # a_ge_b[i, j, m] = True si individuo i es >= individuo j en objetivo m
+        # obj_matrix shape: (N, M)
+        A   = obj_matrix[:, np.newaxis, :]   # shape (N, 1, M)
+        B   = obj_matrix[np.newaxis, :, :]   # shape (1, N, M)
+
+        # i domina a j si: para todo m: i[m] >= j[m]  Y  existe m: i[m] > j[m]
         a_ge_b = A >= B      # (N, N, M)
         a_gt_b = A > B       # (N, N, M)
 
-        # i domina a j si: ∀m: i[m] >= j[m]  AND  ∃m: i[m] > j[m]
         dominates = np.all(a_ge_b, axis=2) & np.any(a_gt_b, axis=2)  # (N, N)
-        # dominates[i, j] = True si i domina a j
 
-        # domination_count[i] = cuántos individuos dominan a i
-        domination_count = dominates.sum(axis=0).astype(int)  # columnas = quien es dominado
+        # domination_count[i] = cuantos individuos dominan a i
+        domination_count = dominates.sum(axis=0).astype(int)
 
         ranks   = [-1] * n
         current = list(np.where(domination_count == 0)[0])
@@ -185,14 +198,29 @@ class TrajectoryEvaluator:
         while current:
             for i in current:
                 ranks[i] = rank
-            # Reducir el conteo de los que eran dominados por current
-            dominated_mask = dominates[current, :].any(axis=0)  # shape (N,)
-            domination_count -= dominated_mask.astype(int)
+
+            # FIX CRITICO: usar .sum(axis=0) en vez de .any(axis=0)
+            # Esto resta el NUMERO EXACTO de dominadores del frente actual,
+            # no solo 0 o 1. El bug anterior causaba que nodos dominados
+            # por multiples miembros del frente nunca redujeran su count a 0.
+            dominated_count = dominates[current, :].sum(axis=0).astype(int)
+            domination_count -= dominated_count
+
             next_front = list(np.where(domination_count == 0)[0])
-            # Sólo los que aún no tienen rank asignado
+            # Solo los que aun no tienen rank asignado
             next_front = [i for i in next_front if ranks[i] == -1]
             current = next_front
             rank   += 1
+
+        # FIX DE SEGURIDAD: si algun individuo quedo con rank=-1 (no deberia
+        # pasar con el fix de arriba, pero por seguridad), asignarle el rank maximo + 1
+        if -1 in ranks:
+            max_rank = max(r for r in ranks if r >= 0)
+            ranks = [r if r >= 0 else max_rank + 1 for r in ranks]
+            logger.warning(
+                f"Pareto sort: {sum(1 for r in ranks if r < 0)} individuos "
+                f"quedaron sin rank asignado. Se asigno rank={max_rank + 1}."
+            )
 
         return ranks
 
@@ -202,13 +230,21 @@ class TrajectoryEvaluator:
         obj_matrix: np.ndarray,
     ) -> None:
         """
-        Opera sobre índices locales del frente (no globales).
-        Crowding distance mide aislamiento dentro del frente — mayor = más diverso.
+        Opera sobre indices locales del frente (no globales).
+        Crowding distance mide aislamiento dentro del frente -- mayor = mas diverso.
+
+        FIX: Proteccion contra pareto_rank=-1 y col_range=0.
         """
-        max_rank = max(et.pareto_rank for et in evaluated)
+        # Proteger contra rangos invalidos
+        valid_ranks = [et.pareto_rank for et in evaluated if et.pareto_rank >= 0]
+        if not valid_ranks:
+            for et in evaluated:
+                et.crowding_distance = 0.0
+            return
+
+        max_rank = max(valid_ranks)
 
         for rank in range(max_rank + 1):
-            # Índices globales de este frente
             global_indices = [i for i, et in enumerate(evaluated) if et.pareto_rank == rank]
             k = len(global_indices)
 
@@ -217,8 +253,7 @@ class TrajectoryEvaluator:
                     evaluated[gi].crowding_distance = float("inf")
                 continue
 
-            # Submatriz local del frente — FIX [E2]: sin dependencia de orden externo
-            front_matrix = obj_matrix[global_indices]   # shape (k, M)
+            front_matrix = obj_matrix[global_indices]
             n_obj        = front_matrix.shape[1]
             distances    = np.zeros(k, dtype=np.float64)
 
@@ -237,6 +272,9 @@ class TrajectoryEvaluator:
                         front_matrix[local_sorted[k_idx + 1], m]
                         - front_matrix[local_sorted[k_idx - 1], m]
                     ) / col_range
+
+            # Limpiar NaN/Inf de las distancias antes de asignar
+            distances = np.nan_to_num(distances, nan=0.0, posinf=float("inf"), neginf=0.0)
 
             for local_i, global_i in enumerate(global_indices):
                 evaluated[global_i].crowding_distance = float(distances[local_i])

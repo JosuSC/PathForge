@@ -1,39 +1,59 @@
 """
 experiments/metrics.py
 ----------------------
-Métricas del sistema para el diseño experimental.
+Metricas del sistema para el diseno experimental.
 
-Mide el COMPORTAMIENTO del algoritmo, no solo la calidad de las
-trayectorias. Permite comparar configuraciones científicamente:
-    - ¿Qué beam_width produce más diversidad?
-    - ¿Qué perfil de restricciones genera más trayectorias Pareto-óptimas?
-    - ¿Cuánto tiempo tarda cada configuración?
+FIX ADAPTATIVO: Proteccion contra division por cero en _compute_diversity
+y compute_metrics. Cuando pocas trayectorias sobreviven, los rangos
+de columnas pueden ser 0, causando float division by zero. Ahora se
+reemplazan rangos 0 con 1.0 y se protege con _safe_mean().
 
+FIX NaN/Inf: Se limpian valores NaN/Inf antes de calcular promedios.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from backend.core.evaluator import EvaluatedTrajectory  # FIX [M1]
+from backend.core.evaluator import EvaluatedTrajectory
 
 
 # ---------------------------------------------------------------------------
-# Estructura de métricas
+# Helper: media segura
+# ---------------------------------------------------------------------------
+
+def _safe_mean(values: list[float]) -> float:
+    """
+    Calcula la media de forma segura:
+    - Lista vacia -> 0.0
+    - Filtra NaN e Inf
+    - Si todo es NaN/Inf -> 0.0
+    """
+    if not values:
+        return 0.0
+    clean = [v for v in values if math.isfinite(v)]
+    if not clean:
+        return 0.0
+    return float(np.mean(clean))
+
+
+# ---------------------------------------------------------------------------
+# Estructura de metricas
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ExperimentMetrics:
-    """Métricas capturadas durante una ejecución del generador."""
+    """Metricas capturadas durante una ejecucion del generador."""
 
     config_name:        str
     source_node:        str
     constraint_profile: str
 
-    # Conteos
+    # Condeos
     trajectories_generated: int   = 0
     pareto_front_size:       int   = 0
 
@@ -44,13 +64,13 @@ class ExperimentMetrics:
     avg_years:          float = 0.0
 
     # FIX [M3]: campos nuevos de graph.py v2
-    terminal_rate:          float = 0.0   # fracción de trayectorias que terminan en nodo terminal
-    avg_transition_prob:    float = 0.0   # probabilidad media de transición (dato real, no sintético)
+    terminal_rate:          float = 0.0
+    avg_transition_prob:    float = 0.0
 
-    # Diversidad (cuán distintas son las trayectorias entre sí)
+    # Diversidad
     diversity_score:    float = 0.0
 
-    # Tiempo de ejecución
+    # Tiempo de ejecucion
     execution_time_ms:  float = 0.0
 
     def to_dict(self) -> dict:
@@ -64,7 +84,6 @@ class ExperimentMetrics:
             "avg_satisfaction":     round(self.avg_satisfaction,    4),
             "avg_risk":             round(self.avg_risk,            4),
             "avg_years":            round(self.avg_years,           2),
-            # FIX [M3]: incluidos en la salida
             "terminal_rate":        round(self.terminal_rate,       4),
             "avg_transition_prob":  round(self.avg_transition_prob, 4),
             "diversity":            round(self.diversity_score,     4),
@@ -73,7 +92,7 @@ class ExperimentMetrics:
 
 
 # ---------------------------------------------------------------------------
-# Función principal de cómputo
+# Funcion principal de computo
 # ---------------------------------------------------------------------------
 
 def compute_metrics(
@@ -84,10 +103,7 @@ def compute_metrics(
     execution_time_ms:  float,
 ) -> ExperimentMetrics:
     """
-    Calcula todas las métricas para una ejecución del experimento.
-
-    La diversidad se mide como la distancia euclidiana media entre todos
-    los pares de trayectorias en el espacio de scores normalizados.
+    Calcula todas las metricas para una ejecucion del experimento.
     """
     if not results:
         return ExperimentMetrics(
@@ -99,29 +115,19 @@ def compute_metrics(
 
     scores_list = [et.scores for et in results]
 
-    # FIX [M4]: lista comprehension limpia
     pareto_size = sum(1 for et in results if et.pareto_rank == 0)
-
-    def _safe_mean(values: list) -> float:
-        """Media segura que devuelve 0.0 si la lista está vacía o tiene NaN/Inf."""
-        if not values:
-            return 0.0
-        arr = np.array(values, dtype=np.float64)
-        result = float(np.nanmean(arr))
-        return result if not (np.isnan(result) or np.isinf(result)) else 0.0
 
     avg_salary_growth = _safe_mean([s.get("salary_growth",      0.0) for s in scores_list])
     avg_satisfaction  = _safe_mean([s.get("avg_satisfaction",   0.0) for s in scores_list])
     avg_risk          = _safe_mean([s.get("avg_risk",           0.0) for s in scores_list])
     avg_years         = _safe_mean([s.get("total_years",        0.0) for s in scores_list])
 
-    # FIX [M3]: métricas nuevas de graph.py v2
     terminal_vals  = [s.get("is_terminal_end", 0.0) for s in scores_list]
     terminal_rate  = _safe_mean(terminal_vals)
 
     trans_vals = [s.get("transition_probability_score") for s in scores_list]
-    trans_valid = [v for v in trans_vals if v is not None]
-    avg_transition_prob = _safe_mean(trans_valid) if trans_valid else 0.0
+    trans_valid = [v for v in trans_vals if v is not None and math.isfinite(v)]
+    avg_transition_prob = float(np.mean(trans_valid)) if trans_valid else 0.0
 
     diversity = _compute_diversity(results)
 
@@ -143,7 +149,7 @@ def compute_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Diversidad vectorizada
+# Diversidad vectorizada -- con proteccion contra division por cero
 # ---------------------------------------------------------------------------
 
 def _compute_diversity(results: list[EvaluatedTrajectory]) -> float:
@@ -151,9 +157,11 @@ def _compute_diversity(results: list[EvaluatedTrajectory]) -> float:
     Diversidad = distancia euclidiana media entre todos los pares
     de trayectorias en el espacio de scores normalizados.
 
-    Vectorizado con numpy broadcasting — O(N) operaciones numpy
-    en lugar de O(N²) loops Python. Para N=100: ~100x más rápido.
-    
+    Vectorizado con numpy broadcasting.
+
+    FIX ADAPTATIVO: Cuando todas las trayectorias tienen el mismo valor
+    en una columna (col_range=0), reemplazamos el rango por 1.0.
+    Tambien protegemos contra NaN/Inf en los resultados.
     """
     if len(results) < 2:
         return 0.0
@@ -163,29 +171,39 @@ def _compute_diversity(results: list[EvaluatedTrajectory]) -> float:
         "total_years", "avg_risk", "avg_difficulty",
     ]
 
-    matrix = np.array(
-        [[et.scores.get(k, 0.0) for k in keys] for et in results],
-        dtype=np.float64,
-    )
+    # Construir matriz, reemplazando NaN/Inf con 0.0
+    raw_matrix = []
+    for et in results:
+        row = []
+        for k in keys:
+            v = et.scores.get(k, 0.0)
+            if not math.isfinite(v):
+                v = 0.0
+            row.append(v)
+        raw_matrix.append(row)
+
+    matrix = np.array(raw_matrix, dtype=np.float64)
 
     # Normalizar columnas en [0, 1]
     col_min   = matrix.min(axis=0)
     col_max   = matrix.max(axis=0)
-    col_range = np.where(col_max - col_min == 0, 1.0, col_max - col_min)
+    col_range = col_max - col_min
+    col_range = np.where(col_range == 0, 1.0, col_range)
     matrix    = (matrix - col_min) / col_range
 
-    # FIX [M2]: broadcasting matricial — sin loops Python
-    # diff[i, j, :] = matrix[i, :] - matrix[j, :]  shape: (N, N, M)
-    diff = matrix[:, np.newaxis, :] - matrix[np.newaxis, :, :]    # (N, N, M)
-    dist = np.sqrt((diff ** 2).sum(axis=2))                        # (N, N)
+    # Limpiar NaN/Inf resultantes de la normalizacion
+    matrix = np.nan_to_num(matrix, nan=0.0, posinf=1.0, neginf=0.0)
 
-    # Extraer triángulo superior (sin diagonal) para pares únicos
+    # Broadcasting matricial
+    diff = matrix[:, np.newaxis, :] - matrix[np.newaxis, :, :]
+    dist = np.sqrt((diff ** 2).sum(axis=2))
+
+    # Extraer triangulo superior (sin diagonal) para pares unicos
     n          = len(results)
     upper_idx  = np.triu_indices(n, k=1)
     pairwise   = dist[upper_idx]
 
-    mean_val = float(pairwise.mean()) if len(pairwise) > 0 else 0.0
-    # Proteger contra NaN/Inf
-    if np.isnan(mean_val) or np.isinf(mean_val):
-        return 0.0
-    return mean_val
+    # Filtrar NaN/Inf antes de calcular la media
+    pairwise_clean = pairwise[np.isfinite(pairwise)]
+
+    return float(pairwise_clean.mean()) if len(pairwise_clean) > 0 else 0.0

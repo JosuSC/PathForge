@@ -41,3 +41,4 @@ backend/data/raw/*
 !backend/data/raw/.gitkeep
 backend/data/problems/*
 !backend/data/problems/.gitkeep
+backend/experiments/results/

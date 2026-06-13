@@ -1,13 +1,15 @@
 """
 experiments/runner.py
 ---------------------
-Ejecuta el diseño experimental completo de PathForge.
+Ejecuta el diseno experimental completo de PathForge.
 
-Compara sistemáticamente:
-    - 4 configuraciones del generador (beam_width, max_depth)
-    - 4 perfiles de restricciones
-    - 4 nodos de inicio (del grafo default o dinámicos del domain graph)
-    
+FIX ADAPTATIVO: Seleccion inteligente de source nodes que prioriza
+nodos con >=2 sucesores. Ya no toma los primeros 4 "entry" (que en
+domain graphs como engineering son 0). Estrategia: entry con sucesores
+-> mid con sucesores -> cualquier nodo con sucesores.
+
+FIX ENCODING: _print_summary usa solo ASCII para evitar
+UnicodeEncodeError en Windows cp1252.
 """
 
 from __future__ import annotations
@@ -18,14 +20,13 @@ import time
 from pathlib import Path
 import argparse
 
-# Bootstrap de sys.path — mismo patrón que run_experiments.py
+# Bootstrap de sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from loguru import logger
 
-# Importación condicional de rich — no rompe si no está instalado
 try:
     from rich.console import Console
     from rich.progress import track
@@ -38,17 +39,16 @@ except ImportError:
         """Fallback sin rich: itera normalmente."""
         return iterable
 
-# Importaciones absolutas con prefijo backend
 from backend.core.constraints import ConstraintProfiles, Constraint
 from backend.core.generator import GeneratorConfig, TrajectoryGenerator
 from backend.core.graph import CareerGraph
-from backend.core.scorer import CareerOutcomePredictor        # FIX [R3]
+from backend.core.scorer import CareerOutcomePredictor
 from backend.data.loader import load_career_graph, load_domain_graph, list_available_domains
 from backend.experiments.metrics import ExperimentMetrics, compute_metrics
 
 
 # ---------------------------------------------------------------------------
-# Directorio de resultados unificado con run_experiments.py
+# Directorio de resultados
 # ---------------------------------------------------------------------------
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -77,6 +77,105 @@ DEFAULT_SOURCE_NODES = [
 
 
 # ---------------------------------------------------------------------------
+# FIX ADAPTATIVO: Seleccion inteligente de source nodes
+# ---------------------------------------------------------------------------
+
+def _select_source_nodes(graph: CareerGraph, max_nodes: int = 4) -> list[str]:
+    """
+    Selecciona nodos de inicio inteligentemente para domain graphs.
+
+    Estrategia de prioridad:
+    1. Nodos "entry" con >=2 sucesores
+    2. Nodos "entry" con >=1 sucesor
+    3. Nodos "mid" con >=2 sucesores
+    4. Cualquier nodo con >=2 sucesores
+    5. Los primeros nodos disponibles como ultimo recurso
+    """
+    all_nodes = graph.all_node_ids()
+
+    def _filter_by_type_and_successors(
+        node_type: str | None = None,
+        min_successors: int = 2
+    ) -> list[str]:
+        result = []
+        for nid in all_nodes:
+            if node_type and graph.node_attrs(nid).get("type") != node_type:
+                continue
+            if len(graph.successors(nid)) >= min_successors:
+                result.append(nid)
+        return result
+
+    # Estrategia 1: entry con >=2 sucesores
+    candidates = _filter_by_type_and_successors("entry", 2)
+    if len(candidates) >= max_nodes:
+        return candidates[:max_nodes]
+
+    # Estrategia 2: entry con >=1 sucesor
+    candidates = _filter_by_type_and_successors("entry", 1)
+    if len(candidates) >= max_nodes:
+        return candidates[:max_nodes]
+
+    # Estrategia 3: mid con >=2 sucesores
+    mid_candidates = _filter_by_type_and_successors("mid", 2)
+    candidates.extend(mid_candidates)
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    candidates = unique
+    if len(candidates) >= max_nodes:
+        return candidates[:max_nodes]
+
+    # Estrategia 4: cualquier nodo con >=2 sucesores
+    any_candidates = _filter_by_type_and_successors(None, 2)
+    candidates.extend(any_candidates)
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    candidates = unique
+    if len(candidates) >= max_nodes:
+        return candidates[:max_nodes]
+
+    # Estrategia 5: cualquier nodo con >=1 sucesor
+    any1_candidates = _filter_by_type_and_successors(None, 1)
+    candidates.extend(any1_candidates)
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    candidates = unique
+
+    # Ultimo recurso: todos los nodos
+    candidates.extend(all_nodes)
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+
+    # Logging para debug
+    entry_count = sum(1 for n in all_nodes if graph.node_attrs(n).get("type") == "entry")
+    mid_with_2 = len(mid_candidates)
+    any_with_2 = len(any_candidates)
+    any_with_1 = len(any1_candidates)
+    logger.info(
+        f"Source selection: entry={entry_count}, mid(2+)={mid_with_2}, "
+        f"any(2+)={any_with_2}, any(1+)={any_with_1}, "
+        f"selected={unique[:max_nodes]}"
+    )
+
+    return unique[:max_nodes]
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -90,7 +189,6 @@ def _load_graph_and_sources(
     - Si instances_path existe: (graph, lista de instancias desde el archivo)
     - Si no: (graph, lista de instancias auto-generadas)
     """
-    # 1. Cargar el grafo
     if domain_id:
         raw_graph = load_domain_graph(domain_id)
         graph = CareerGraph(raw_graph, outcome_predictor=predictor)
@@ -98,52 +196,16 @@ def _load_graph_and_sources(
         raw_graph = load_career_graph()
         graph = CareerGraph(raw_graph, outcome_predictor=predictor)
 
-    # 2. Si hay archivo de instancias, usarlo
     if instances_path is not None and instances_path.exists():
         logger.info(f"Cargando instancias desde {instances_path}")
         instances = json.loads(instances_path.read_text(encoding="utf-8"))
         return graph, instances
 
-    # 3. No hay archivo -> generar instancias automáticas
     if domain_id:
-        # Estrategia inteligente: priorizar nodos con sucesores que no sean terminales
-        all_ids = graph.all_node_ids()
-        non_terminal = [nid for nid in all_ids if not graph.is_terminal(nid)]
-
-        # Prioridad 1: entry con al menos 2 sucesores
-        entry_with_succ = [
-            nid for nid in non_terminal
-            if graph.node_attrs(nid).get("type") == "entry"
-            and len(graph.successors(nid)) >= 2
-        ]
-        # Prioridad 2: mid con al menos 2 sucesores
-        mid_with_succ = [
-            nid for nid in non_terminal
-            if graph.node_attrs(nid).get("type") == "mid"
-            and len(graph.successors(nid)) >= 2
-        ]
-        # Prioridad 3: cualquier nodo no-terminal con al menos 2 sucesores
-        any_with_succ = [
-            nid for nid in non_terminal
-            if len(graph.successors(nid)) >= 2
-        ]
-        # Prioridad 4: cualquier nodo no-terminal con al menos 1 sucesor
-        any_one_succ = [
-            nid for nid in non_terminal
-            if len(graph.successors(nid)) >= 1
-        ]
-
-        source_nodes = (entry_with_succ + mid_with_succ + any_with_succ + any_one_succ)[:4]
-
-        # Fallback último: los primeros 4 IDs
+        source_nodes = _select_source_nodes(graph, max_nodes=4)
         if not source_nodes:
-            source_nodes = all_ids[:4]
-
-        logger.info(
-            f"Domain graph '{domain_id}': source_nodes={source_nodes} "
-            f"(entry={len(entry_with_succ)}, mid={len(mid_with_succ)}, "
-            f"any2={len(any_with_succ)}, any1={len(any_one_succ)})"
-        )
+            source_nodes = graph.all_node_ids()[:4]
+        logger.info(f"Domain graph '{domain_id}': source_nodes={source_nodes}")
     else:
         source_nodes = DEFAULT_SOURCE_NODES
 
@@ -163,42 +225,24 @@ def run_all_experiments(
 ) -> list[ExperimentMetrics]:
     """
     Ejecuta todas las combinaciones del experimento y guarda resultados.
-
-    Si se proporciona instances_path, carga las instancias desde ese archivo.
-    Cada instancia es un dict con:
-        - "source_career": str
-        - "profile": str (nombre del perfil, ej. "balanced")
-        - "beam_width": int (opcional)
-        - "max_depth": int (opcional)
-
-    Args:
-        domain_id: Si se pasa, usa ese domain graph en lugar de careers.json.
-        instances_path: Ruta al archivo JSON con instancias.
-
-    Returns:
-        Lista de métricas de cada experimento completado.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info("Cargando modelo ML...")
     predictor = CareerOutcomePredictor.load_or_train()
 
-    # Carga el grafo y las instancias (auto-generadas o desde archivo)
     graph, instances = _load_graph_and_sources(domain_id, predictor, instances_path)
 
     all_metrics: list[ExperimentMetrics] = []
     combinations = []
 
-    # Perfil por defecto por si el nombre no existe
     default_profile = ConstraintProfiles.balanced()
 
     for inst in instances:
         source = inst["source_career"]
         profile_name = inst.get("profile", "balanced")
-        # Obtener el objeto ConstraintProfile
         prof = CONSTRAINT_PROFILES.get(profile_name, default_profile)
 
-        # Caso 1: instancia define sus propios parámetros de generación
         bw = inst.get("beam_width")
         md = inst.get("max_depth")
         if bw is not None and md is not None:
@@ -206,7 +250,6 @@ def run_all_experiments(
             cfg_name = f"bw{bw}_md{md}"
             combinations.append((cfg_name, cfg, profile_name, prof, source))
         else:
-            # Caso 2: usar todas las configuraciones globales
             for cfg_name, cfg in GENERATOR_CONFIGS.items():
                 combinations.append((cfg_name, cfg, profile_name, prof, source))
 
@@ -230,12 +273,11 @@ def run_all_experiments(
 
             start      = time.perf_counter()
             results    = generator.generate(source=source, constraints=prof)
-            
-            # Si no hay trayectorias, saltar el cálculo de métricas
+
             if not results:
-                logger.warning(f"Sin trayectorias generadas para {experiment_id}. Saltando métricas.")
+                logger.warning(f"Sin trayectorias generadas para {experiment_id}. Saltando metricas.")
                 continue
-                
+
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             metrics = compute_metrics(
@@ -248,9 +290,9 @@ def run_all_experiments(
             all_metrics.append(metrics)
 
         except Exception as exc:
-            logger.warning(f"Experimento {experiment_id} falló: {exc}")
+            logger.warning(f"Experimento {experiment_id} fallo: {exc}")
 
-    # Guardar resultados en JSON e Incluir el nombre del dominio en el archivo
+    # Guardar resultados
     filename = f"experiment_results_{domain_id}.json" if domain_id else "experiment_results.json"
     output_path = RESULTS_DIR / filename
     data = [m.to_dict() for m in all_metrics]
@@ -266,10 +308,11 @@ def run_all_experiments(
 
 def _print_summary(metrics: list[ExperimentMetrics]) -> None:
     """
-    Imprime un resumen ejecutivo. FIX [R6]: protegido si metrics está vacío.
+    Imprime un resumen ejecutivo. Protegido si metrics esta vacio.
+    FIX ENCODING: usa solo ASCII para evitar UnicodeEncodeError en Windows cp1252.
     """
     if not metrics:
-        logger.warning("No hay métricas para resumir.")
+        logger.warning("No hay metricas para resumir.")
         return
 
     def _rich_print(msg: str) -> None:
@@ -280,10 +323,9 @@ def _print_summary(metrics: list[ExperimentMetrics]) -> None:
                           .replace("[green]","").replace("[/green]","")
                           .replace("[yellow]","").replace("[/yellow]",""))
 
-    _rich_print("\n[bold cyan]═══ RESUMEN EXPERIMENTAL ═══[/bold cyan]")
+    _rich_print("\n[bold cyan]=== RESUMEN EXPERIMENTAL ===[/bold cyan]")
     _rich_print(f"  Experimentos completados: [green]{len(metrics)}[/green]")
 
-    # max/min protegidos — metrics ya verificado no vacío arriba
     best_diversity = max(metrics, key=lambda m: m.diversity_score)
     best_pareto    = max(metrics, key=lambda m: m.pareto_front_size)
     fastest        = min(metrics, key=lambda m: m.execution_time_ms)
@@ -305,14 +347,14 @@ def _print_summary(metrics: list[ExperimentMetrics]) -> None:
         f"({best_terminal.terminal_rate:.1%})"
     )
     _rich_print(
-        f"  Más rápido          : [yellow]{fastest.config_name}[/yellow] "
+        f"  Mas rapido          : [yellow]{fastest.config_name}[/yellow] "
         f"({fastest.execution_time_ms:.1f}ms)"
     )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PathForge — Diseño Experimental")
-    
+    parser = argparse.ArgumentParser(description="PathForge -- Diseno Experimental")
+
     parser.add_argument(
         "--domain", type=str, default=None,
         help="ID del domain graph a usar (ej: software_development). "
@@ -320,13 +362,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--instances", type=str, default=None,
-        help="Ruta al archivo JSON con instancias personalizadas. "
-             "Si no se pasa, se usan las instancias por defecto."
+        help="Ruta al archivo JSON con instancias personalizadas."
     )
-    
+
     args = parser.parse_args()
 
-    # Conversión segura a Path
     inst_path = Path(args.instances) if args.instances else None
-    
+
     run_all_experiments(domain_id=args.domain, instances_path=inst_path)

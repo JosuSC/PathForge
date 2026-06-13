@@ -3,6 +3,9 @@ backend/main_api.py
 -------------------
 FastAPI + WebSocket para PathForge.
 
+FIX ADAPTATIVO: build_constraint() ahora usa PercentileMaxRiskConstraint
+en vez de MaxRiskConstraint fijo. CareerSimulator recibe max_salary_ref
+del grafo para normalizar correctamente.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from pydantic import BaseModel, Field
 from backend.core.constraints import (
     Constraint, ConstraintProfiles,
     MaxRiskConstraint, MaxYearsConstraint, MinSalaryConstraint,
-    PercentileRiskConstraint,
+    PercentileMaxRiskConstraint,
 )
 from backend.core.generator import GeneratorConfig, TrajectoryGenerator
 from backend.core.graph import CareerGraph
@@ -34,9 +37,9 @@ from backend.data.input_manager import InputManager, UserInput
 from backend.llm.analyzer import TrajectoryAnalyzer
 from backend.llm.client import get_llm_client
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # Estado global
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
@@ -44,7 +47,7 @@ _career_graph: CareerGraph | None = None
 _predictor:    CareerOutcomePredictor | None = None
 _simulator:    CareerSimulator | None = None
 _domain_graphs: dict[str, CareerGraph] = {}
-_startup_domain: str | None = None   # set by main.py --domain
+_startup_domain: str | None = None
 
 
 def _group_by_terminal(results: list) -> dict[str, list]:
@@ -61,13 +64,15 @@ def _init_components() -> None:
         return
     logger.info("Inicializando componentes de IA...")
     _predictor    = CareerOutcomePredictor.load_or_train()
-    _simulator    = CareerSimulator(n_simulations=40, outcome_model=None)
     raw_graph     = load_career_graph()
     _career_graph = CareerGraph(raw_graph, outcome_predictor=_predictor)
+    _simulator    = CareerSimulator(
+        n_simulations=40, outcome_model=None,
+        max_salary_ref=_career_graph.max_salary_ref,
+    )
     logger.success(f"Sistema listo | {_career_graph}")
 
 
-# FIX [10]: lifespan reemplaza el deprecated @app.on_event("startup")
 def set_startup_domain(domain_id: str | None) -> None:
     """Called by main.py before uvicorn.run() to preselect a domain."""
     global _startup_domain
@@ -79,7 +84,6 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _init_components)
     yield
-    # shutdown — liberar recursos si fuera necesario
     _domain_graphs.clear()
     logger.info("PathForge API apagada.")
 
@@ -107,9 +111,9 @@ def get_domain_graph(domain_id: str) -> CareerGraph:
     return _domain_graphs[domain_id]
 
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # Schemas
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 class NodeInput(BaseModel):
     id: str
@@ -142,14 +146,14 @@ class ExploreRequest(BaseModel):
     beam_width: int = 10
     max_depth: int = 6
     top_k: int = 15
-    user_profile: str = "profesional de tecnología"
+    user_profile: str = "profesional de tecnologia"
     use_simulation: bool = True
 
 
 class AnalyzeRequest(BaseModel):
     trajectories: list[dict]
     criterion: str = "mejor trayectoria general"
-    user_profile: str = "profesional de tecnología"
+    user_profile: str = "profesional de tecnologia"
 
 
 class SimulateRequest(BaseModel):
@@ -158,11 +162,18 @@ class SimulateRequest(BaseModel):
     domain_id: str | None = None
 
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # Helpers
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 def build_constraint(req: ExploreRequest) -> Constraint:
+    """
+    Construye restricciones combinando el perfil base + restricciones extra.
+
+    FIX ADAPTATIVO: Usa PercentileMaxRiskConstraint en vez de
+    MaxRiskConstraint(req.max_risk) fijo. Esto permite que el riesgo
+    maximo se adapte a los rangos del grafo cargado.
+    """
     profiles = {
         "conservative": ConstraintProfiles.conservative(),
         "ambitious":    ConstraintProfiles.ambitious(),
@@ -170,9 +181,13 @@ def build_constraint(req: ExploreRequest) -> Constraint:
         "fast_track":   ConstraintProfiles.fast_track(),
     }
     base = profiles.get(req.profile, ConstraintProfiles.balanced())
-    # Usar PercentileRiskConstraint en vez de MaxRiskConstraint fijo
-    # max_risk del slider (0.0-1.0) se interpreta como percentil del grafo
-    return base & PercentileRiskConstraint(req.max_risk) & MaxYearsConstraint(req.max_years)
+    # FIX ADAPTATIVO: usar percentil en vez de valor fijo
+    risk_percentile = max(50.0, min(95.0, req.max_risk * 100.0))
+    return (
+        base
+        & PercentileMaxRiskConstraint(percentile=risk_percentile)
+        & MaxYearsConstraint(req.max_years)
+    )
 
 
 def build_graph_from_request(req: ExploreRequest) -> CareerGraph:
@@ -205,27 +220,20 @@ def traj_to_dict(et) -> dict:
     }
 
 
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 # REST Endpoints
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
 
 @app.get("/")
 async def serve_frontend():
-    """
-    Sirve index.html con configuración de inicio inyectada como window.__PATHFORGE_CONFIG__.
-    Soporta:
-      --domain <id>  → preselecciona ese domain graph al arrancar la UI
-      --empty        → arranca sin grafo (domain_id = '__empty__')
-    """
     index = FRONTEND_DIR / "index.html"
     if not index.exists():
         return {"message": "PathForge API v5.0"}
 
     html = index.read_text(encoding="utf-8")
 
-    # Inyectar config antes del cierre de </head>
     config = {
-        "startup_domain": _startup_domain,   # None | "__empty__" | "assembly" etc.
+        "startup_domain": _startup_domain,
     }
     import json as _json
     config_script = (
@@ -311,12 +319,10 @@ async def simulate_trajectory(req: SimulateRequest):
     graph      = get_domain_graph(req.domain_id) if req.domain_id else get_graph()
     node_attrs = {nid: graph.node_attrs(nid) for nid in graph.all_node_ids()}
     edge_attrs = {(u, v): graph.edge_attrs(u, v) for u, v in graph._g.edges()}
-    # Pasar max_salary del grafo para normalizar correctamente el success_score
-    max_sal = max(
-        (graph.node_attrs(nid).get("avg_salary", 200_000) for nid in graph.all_node_ids()),
-        default=200_000,
+    sim    = CareerSimulator(
+        n_simulations=req.n_simulations,
+        max_salary_ref=graph.max_salary_ref,
     )
-    sim    = CareerSimulator(n_simulations=req.n_simulations, max_salary_ref=max_sal)
     result = sim.monte_carlo(tuple(req.path), node_attrs, edge_attrs)
     return result
 
@@ -354,13 +360,13 @@ async def analyze_trajectories(req: AnalyzeRequest):
             "trajectories_analyzed": result.trajectories_analyzed,
         }
     except Exception as exc:
-        logger.error(f"Error en análisis: {exc}")
+        logger.error(f"Error en analisis: {exc}")
         return {"analysis": f"Error: {exc}", "trajectories_analyzed": 0}
 
 
-# ──────────────────────────────────────────────────────────────
-# Gestión de Inputs de Usuario (BD SQLite)
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
+# Gestion de Inputs de Usuario (BD SQLite)
+# -----------------------------------------------------------------------
 
 class UserInputRequest(BaseModel):
     id: str
@@ -372,7 +378,7 @@ class UserInputRequest(BaseModel):
     beam_width: int = 10
     max_depth: int = 6
     top_k: int = 15
-    user_profile_description: str = "profesional de tecnología"
+    user_profile_description: str = "profesional de tecnologia"
     notes: str = ""
 
 
@@ -383,7 +389,7 @@ async def create_input(req: UserInputRequest):
         user_input = UserInput(
             id=req.id,
             source_career=req.source_career,
-            domain_id=req.domain_id,      # FIX [06]: persistido correctamente
+            domain_id=req.domain_id,
             profile=req.profile,
             max_years=req.max_years,
             max_risk=req.max_risk,
@@ -410,7 +416,7 @@ async def list_inputs():
                 {
                     "id": inp.id,
                     "source_career": inp.source_career,
-                    "domain_id": inp.domain_id,    # FIX [06]: incluido en respuesta
+                    "domain_id": inp.domain_id,
                     "profile": inp.profile,
                     "max_years": inp.max_years,
                     "max_risk": inp.max_risk,
@@ -436,7 +442,7 @@ async def get_input(input_id: str):
         return {
             "id": user_input.id,
             "source_career": user_input.source_career,
-            "domain_id": user_input.domain_id,    # FIX [06]: incluido en respuesta
+            "domain_id": user_input.domain_id,
             "profile": user_input.profile,
             "max_years": user_input.max_years,
             "max_risk": user_input.max_risk,
@@ -464,9 +470,9 @@ async def delete_input(input_id: str):
         return {"success": False, "error": str(e)}
 
 
-# ──────────────────────────────────────────────────────────────
-# WebSocket — stream enriquecido del Beam Search
-# ──────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------
+# WebSocket -- stream enriquecido del Beam Search
+# -----------------------------------------------------------------------
 
 WS_HEARTBEAT_INTERVAL = 25
 WS_CLIENT_TIMEOUT     = 120
