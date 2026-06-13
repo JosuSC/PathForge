@@ -143,7 +143,10 @@ class TrajectoryEvaluator:
         col_max   = matrix.max(axis=0)
         col_range = np.where(col_max - col_min == 0, 1.0, col_max - col_min)
         matrix    = (matrix - col_min) / col_range
-
+        
+        # Reemplazar NaN por 0.0 (evita divisiones por cero posteriores)
+        matrix = np.nan_to_num(matrix, nan=0.0)
+        
         return matrix
 
     @staticmethod

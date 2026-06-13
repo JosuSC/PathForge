@@ -230,11 +230,13 @@ class CareerSimulator:
         seed: int | None = None,
         n_simulations: int = 50,
         outcome_model=None,
+        max_salary_ref: float = 200_000,
     ) -> None:
         self._rng          = random.Random(seed)
         self._np_rng       = np.random.default_rng(seed)
         self._n_sims       = n_simulations
         self._outcome_model = outcome_model
+        self._max_salary_ref = max_salary_ref
 
     # ── API pública ────────────────────────────────────────────
 
@@ -286,8 +288,10 @@ class CareerSimulator:
         effective_years    = max(1.0, current_year + year_offset)
 
         neg_count = sum(1 for e in events if e.event_type in _NEGATIVE_EVENTS)
+        # Usar max_salary_ref del grafo, no hardcoded a 200_000
+        salary_ref = max(self._max_salary_ref, 1)
         success_score = (
-            0.35 * min(final_salary / 200_000, 1.0) +
+            0.35 * min(final_salary / salary_ref, 1.0) +
             0.30 * final_satisfaction +
             0.20 * (1.0 - min(effective_years / 20, 1.0)) +
             0.15 * (1.0 - neg_count / max(len(path), 1))

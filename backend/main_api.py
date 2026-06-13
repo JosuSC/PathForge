@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from backend.core.constraints import (
     Constraint, ConstraintProfiles,
     MaxRiskConstraint, MaxYearsConstraint, MinSalaryConstraint,
+    PercentileRiskConstraint,
 )
 from backend.core.generator import GeneratorConfig, TrajectoryGenerator
 from backend.core.graph import CareerGraph
@@ -169,7 +170,9 @@ def build_constraint(req: ExploreRequest) -> Constraint:
         "fast_track":   ConstraintProfiles.fast_track(),
     }
     base = profiles.get(req.profile, ConstraintProfiles.balanced())
-    return base & MaxRiskConstraint(req.max_risk) & MaxYearsConstraint(req.max_years)
+    # Usar PercentileRiskConstraint en vez de MaxRiskConstraint fijo
+    # max_risk del slider (0.0-1.0) se interpreta como percentil del grafo
+    return base & PercentileRiskConstraint(req.max_risk) & MaxYearsConstraint(req.max_years)
 
 
 def build_graph_from_request(req: ExploreRequest) -> CareerGraph:
@@ -308,7 +311,12 @@ async def simulate_trajectory(req: SimulateRequest):
     graph      = get_domain_graph(req.domain_id) if req.domain_id else get_graph()
     node_attrs = {nid: graph.node_attrs(nid) for nid in graph.all_node_ids()}
     edge_attrs = {(u, v): graph.edge_attrs(u, v) for u, v in graph._g.edges()}
-    sim    = CareerSimulator(n_simulations=req.n_simulations)
+    # Pasar max_salary del grafo para normalizar correctamente el success_score
+    max_sal = max(
+        (graph.node_attrs(nid).get("avg_salary", 200_000) for nid in graph.all_node_ids()),
+        default=200_000,
+    )
+    sim    = CareerSimulator(n_simulations=req.n_simulations, max_salary_ref=max_sal)
     result = sim.monte_carlo(tuple(req.path), node_attrs, edge_attrs)
     return result
 

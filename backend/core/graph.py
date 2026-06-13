@@ -2,6 +2,7 @@
 core/graph.py
 -------------
 Capa de abstracción sobre el grafo de carreras.
+Pre-computa umbrales por percentil para constraints adaptativos.
 
 """
 
@@ -52,6 +53,8 @@ class CareerGraph:
     """
     Wrapper sobre nx.DiGraph que expone operaciones específicas
     del dominio de trayectorias profesionales.
+    Pre-computa umbrales por percentil para que los constraints
+    adaptativos funcionen sin recalcular en cada evaluación.
     """
 
     def __init__(self, graph: nx.DiGraph, outcome_predictor=None) -> None:
@@ -64,6 +67,27 @@ class CareerGraph:
         ]
         self._max_salary: float = max(salaries) if salaries else 180_000
         self._validate()
+
+        # ── Pre-computar umbrales por percentil para constraints adaptativos ──
+        # Se calculan UNA vez al crear el CareerGraph y se reutilizarán
+        # en cada llamada a PercentileRiskConstraint.is_satisfied() etc.
+        risks = [data.get("risk", 0) for _, _, data in self._g.edges(data=True)]
+        diffs = [data.get("difficulty", 0) for _, _, data in self._g.edges(data=True)]
+
+        self._salary_thresholds: dict[str, float] = {}
+        if salaries:
+            for p in range(1, 100):
+                self._salary_thresholds[f"p{p}"] = float(np.percentile(salaries, p))
+
+        self._risk_thresholds: dict[str, float] = {}
+        if risks:
+            for p in range(1, 100):
+                self._risk_thresholds[f"p{p}"] = float(np.percentile(risks, p))
+
+        self._difficulty_thresholds: dict[str, float] = {}
+        if diffs:
+            for p in range(1, 100):
+                self._difficulty_thresholds[f"p{p}"] = float(np.percentile(diffs, p))
 
     # ------------------------------------------------------------------
     # Validación
@@ -143,7 +167,8 @@ class CareerGraph:
         demands       = [n["demand"]        for n in nodes_data]
         satisfactions = [n["satisfaction"]  for n in nodes_data]
 
-        salary_growth = (salaries[-1] - salaries[0]) / max(salaries[0], 1)
+        # FIX: abs() protege contra salarios negativos accidentales
+        salary_growth = (salaries[-1] - salaries[0]) / max(abs(salaries[0]), 1)
         total_years   = sum(e["transition_years"] for e in edges_data)
         avg_risk       = float(np.mean([e["risk"]       for e in edges_data]))
         avg_difficulty = float(np.mean([e["difficulty"] for e in edges_data]))

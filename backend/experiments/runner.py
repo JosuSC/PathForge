@@ -106,14 +106,44 @@ def _load_graph_and_sources(
 
     # 3. No hay archivo -> generar instancias automáticas
     if domain_id:
-        # Obtener source_nodes solo si es necesario
-        source_nodes = [
-            nid for nid in graph.all_node_ids()
+        # Estrategia inteligente: priorizar nodos con sucesores que no sean terminales
+        all_ids = graph.all_node_ids()
+        non_terminal = [nid for nid in all_ids if not graph.is_terminal(nid)]
+
+        # Prioridad 1: entry con al menos 2 sucesores
+        entry_with_succ = [
+            nid for nid in non_terminal
             if graph.node_attrs(nid).get("type") == "entry"
-        ][:4]
+            and len(graph.successors(nid)) >= 2
+        ]
+        # Prioridad 2: mid con al menos 2 sucesores
+        mid_with_succ = [
+            nid for nid in non_terminal
+            if graph.node_attrs(nid).get("type") == "mid"
+            and len(graph.successors(nid)) >= 2
+        ]
+        # Prioridad 3: cualquier nodo no-terminal con al menos 2 sucesores
+        any_with_succ = [
+            nid for nid in non_terminal
+            if len(graph.successors(nid)) >= 2
+        ]
+        # Prioridad 4: cualquier nodo no-terminal con al menos 1 sucesor
+        any_one_succ = [
+            nid for nid in non_terminal
+            if len(graph.successors(nid)) >= 1
+        ]
+
+        source_nodes = (entry_with_succ + mid_with_succ + any_with_succ + any_one_succ)[:4]
+
+        # Fallback último: los primeros 4 IDs
         if not source_nodes:
-            source_nodes = graph.all_node_ids()[:4]
-        logger.info(f"Domain graph '{domain_id}': source_nodes={source_nodes}")
+            source_nodes = all_ids[:4]
+
+        logger.info(
+            f"Domain graph '{domain_id}': source_nodes={source_nodes} "
+            f"(entry={len(entry_with_succ)}, mid={len(mid_with_succ)}, "
+            f"any2={len(any_with_succ)}, any1={len(any_one_succ)})"
+        )
     else:
         source_nodes = DEFAULT_SOURCE_NODES
 

@@ -102,18 +102,26 @@ def compute_metrics(
     # FIX [M4]: lista comprehension limpia
     pareto_size = sum(1 for et in results if et.pareto_rank == 0)
 
-    avg_salary_growth = float(np.mean([s.get("salary_growth",      0.0) for s in scores_list]))
-    avg_satisfaction  = float(np.mean([s.get("avg_satisfaction",   0.0) for s in scores_list]))
-    avg_risk          = float(np.mean([s.get("avg_risk",           0.0) for s in scores_list]))
-    avg_years         = float(np.mean([s.get("total_years",        0.0) for s in scores_list]))
+    def _safe_mean(values: list) -> float:
+        """Media segura que devuelve 0.0 si la lista está vacía o tiene NaN/Inf."""
+        if not values:
+            return 0.0
+        arr = np.array(values, dtype=np.float64)
+        result = float(np.nanmean(arr))
+        return result if not (np.isnan(result) or np.isinf(result)) else 0.0
+
+    avg_salary_growth = _safe_mean([s.get("salary_growth",      0.0) for s in scores_list])
+    avg_satisfaction  = _safe_mean([s.get("avg_satisfaction",   0.0) for s in scores_list])
+    avg_risk          = _safe_mean([s.get("avg_risk",           0.0) for s in scores_list])
+    avg_years         = _safe_mean([s.get("total_years",        0.0) for s in scores_list])
 
     # FIX [M3]: métricas nuevas de graph.py v2
     terminal_vals  = [s.get("is_terminal_end", 0.0) for s in scores_list]
-    terminal_rate  = float(np.mean(terminal_vals))
+    terminal_rate  = _safe_mean(terminal_vals)
 
     trans_vals = [s.get("transition_probability_score") for s in scores_list]
     trans_valid = [v for v in trans_vals if v is not None]
-    avg_transition_prob = float(np.mean(trans_valid)) if trans_valid else 0.0
+    avg_transition_prob = _safe_mean(trans_valid) if trans_valid else 0.0
 
     diversity = _compute_diversity(results)
 
@@ -176,4 +184,8 @@ def _compute_diversity(results: list[EvaluatedTrajectory]) -> float:
     upper_idx  = np.triu_indices(n, k=1)
     pairwise   = dist[upper_idx]
 
-    return float(pairwise.mean()) if len(pairwise) > 0 else 0.0
+    mean_val = float(pairwise.mean()) if len(pairwise) > 0 else 0.0
+    # Proteger contra NaN/Inf
+    if np.isnan(mean_val) or np.isinf(mean_val):
+        return 0.0
+    return mean_val
