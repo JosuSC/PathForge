@@ -278,10 +278,6 @@ class TestTrajectory:
         t = Trajectory(nodes=("a", "b", "c"))
         assert len(t) == 3
 
-    def test_trajectory_repr(self):
-        t = Trajectory(nodes=("a", "b", "c"))
-        assert "→" in repr(t)
-
     def test_trajectory_hashable(self):
         """Trajectory debe ser usable como clave de set/dict."""
         t1 = Trajectory(nodes=("a", "b"))

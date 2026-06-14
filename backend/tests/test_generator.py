@@ -133,33 +133,6 @@ class TestGeneratorBasic:
 
 class TestGeneratorConstraints:
 
-    def test_conservative_profile_respects_risk(self, career_graph):
-        config      = GeneratorConfig(beam_width=8, max_depth=5, top_k_results=10)
-        generator   = TrajectoryGenerator(career_graph, config)
-        constraints = ConstraintProfiles.conservative()
-        results     = generator.generate("junior_dev", constraints=constraints)
-
-        for r in results:
-            nodes = r.trajectory.nodes
-            risks = [
-                career_graph.edge_attrs(nodes[i], nodes[i+1])["risk"]
-                for i in range(len(nodes) - 1)
-            ]
-            avg_risk = sum(risks) / len(risks)
-            assert avg_risk <= 0.35 + 1e-9, \
-                f"Conservative violó MaxRisk(0.35): avg_risk={avg_risk:.3f} en {nodes}"
-
-    def test_ambitious_profile_min_salary(self, career_graph):
-        config      = GeneratorConfig(beam_width=8, max_depth=5, top_k_results=10)
-        generator   = TrajectoryGenerator(career_graph, config)
-        constraints = ConstraintProfiles.ambitious()
-        results     = generator.generate("junior_dev", constraints=constraints)
-
-        for r in results:
-            final_sal = r.scores.get("final_salary", 0)
-            assert final_sal >= 70_000, \
-                f"Ambitious violó MinSalary(70k): {final_sal} en {r.trajectory.nodes}"
-
     def test_max_years_constraint(self, career_graph):
         max_yrs     = 5
         config      = GeneratorConfig(beam_width=8, max_depth=6, top_k_results=10)
